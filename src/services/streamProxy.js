@@ -46,7 +46,10 @@ class StreamProxyService {
             accountId: Number(payload.accountId),
             fileId: String(payload.fileId),
             shareId: payload.shareId ? String(payload.shareId) : '',
-            fileName: payload.fileName ? String(payload.fileName) : ''
+            fileName: payload.fileName ? String(payload.fileName) : '',
+            targetFolderId: payload.targetFolderId ? String(payload.targetFolderId) : '',
+            rootName: payload.rootName ? String(payload.rootName) : '',
+            relativeDir: payload.relativeDir ? String(payload.relativeDir) : ''
         };
         const encodedPayload = this._encodePayload(normalizedPayload);
         return `${encodedPayload}.${this._sign(encodedPayload)}`;
@@ -87,6 +90,10 @@ class StreamProxyService {
 
     async resolveLatestUrl(token) {
         const payload = this.parseToken(token);
+        return this.resolveLatestUrlByPayload(payload);
+    }
+
+    async resolveLatestUrlByPayload(payload) {
         const cacheKey = this._getCacheKey(payload);
         const cached = this.cache.get(cacheKey);
         if (cached && cached.expiresAt > Date.now()) {

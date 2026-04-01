@@ -30,6 +30,7 @@ document.addEventListener('DOMContentLoaded', () => {
     initTabs();
     initAccountForm();
     initFileManager();
+    initLazyShareStrm();
     initTaskForm();
     initEditTaskForm();
     // 初始化主题

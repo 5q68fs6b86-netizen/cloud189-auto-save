@@ -26,6 +26,7 @@ const { SubscriptionService } = require('./services/subscription');
 const { StrmConfigService } = require('./services/strmConfig');
 const { TMDBService } = require('./services/tmdb');
 const { StreamProxyService } = require('./services/streamProxy');
+const { LazyShareStrmService } = require('./services/lazyShareStrm');
 
 const app = express();
 app.use(cors({
@@ -143,6 +144,7 @@ AppDataSource.initialize().then(async () => {
     const subscriptionService = new SubscriptionService(subscriptionRepo, subscriptionResourceRepo, accountRepo);
     const strmConfigService = new StrmConfigService(strmConfigRepo, accountRepo, subscriptionRepo, subscriptionResourceRepo);
     const streamProxyService = new StreamProxyService(accountRepo);
+    const lazyShareStrmService = new LazyShareStrmService(accountRepo, taskService);
     const tmdbService = new TMDBService();
     const embyService = new EmbyService(taskService)
     const messageUtil = new MessageUtil();
@@ -948,9 +950,21 @@ AppDataSource.initialize().then(async () => {
         res.json({ version: currentVersion });
     });
 
+    app.post('/api/strm/lazy-share/generate', async (req, res) => {
+        try {
+            const result = await lazyShareStrmService.generateFromShare(req.body || {});
+            res.json({ success: true, data: result });
+        } catch (error) {
+            res.json({ success: false, error: error.message });
+        }
+    });
+
     app.get('/api/stream/:token', async (req, res) => {
         try {
-            const latestUrl = await streamProxyService.resolveLatestUrl(req.params.token);
+            const payload = streamProxyService.parseToken(req.params.token);
+            const latestUrl = payload.type === 'lazyShare'
+                ? await lazyShareStrmService.resolveLatestUrlByPayload(payload)
+                : await streamProxyService.resolveLatestUrlByPayload(payload);
             res.set('Cache-Control', 'no-store');
             res.redirect(302, latestUrl);
         } catch (error) {

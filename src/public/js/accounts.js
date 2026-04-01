@@ -73,6 +73,9 @@ async function fetchAccounts(updateSelect = false) {
         if (typeof updateFileManagerAccountOptions === 'function') {
             updateFileManagerAccountOptions();
         }
+        if (typeof updateLazyShareStrmAccountOptions === 'function') {
+            updateLazyShareStrmAccountOptions();
+        }
     }
 }
 
