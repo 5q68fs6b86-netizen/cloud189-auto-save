@@ -116,6 +116,7 @@ dist
 *.DS_Store
 
 /strm/*
+.playwright-mcp/
 
 *.pem
 /转存助手/*
