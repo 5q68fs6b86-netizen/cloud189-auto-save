@@ -413,6 +413,9 @@ class LazyShareStrmService {
     }
 
     _getTaskLocalPath(task) {
+        if (task?.enableOrganizer) {
+            return this._normalizeRelativePath(task.account?.localStrmPrefix || '');
+        }
         const realFolderName = String(task.realFolderName || '').replace(/\\/g, '/');
         const index = realFolderName.indexOf('/');
         const taskRelativePath = index >= 0 ? realFolderName.substring(index + 1) : realFolderName;
