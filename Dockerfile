@@ -1,5 +1,5 @@
-# 使用Node.js v16.19.0作为基础镜像
-FROM node:16.19.0-slim AS builder
+# 使用受支持的 Node LTS + Debian bookworm，避免 buster 源失效
+FROM node:20-bookworm-slim AS builder
 
 # 设置工作目录
 WORKDIR /home
@@ -22,7 +22,7 @@ RUN cd vender/cloud189-sdk && yarn build
 RUN yarn build
 
 # 构建生产版本
-FROM node:16.19.0-slim AS production
+FROM node:20-bookworm-slim AS production
 
 # 设置工作目录
 WORKDIR /home
