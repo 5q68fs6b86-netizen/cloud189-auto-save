@@ -1,0 +1,17 @@
+.git
+.github
+.gitmodules
+.playwright-mcp
+.vscode
+node_modules
+dist
+data
+strm
+cloud189-auto-save.log
+*.sqlite
+*.zip
+dashboard-static-round*.png
+floating-menu-*.png
+live-*.png
+settings-static-round*.png
+login-redesign-preview.png
