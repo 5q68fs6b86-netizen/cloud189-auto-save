@@ -22,7 +22,8 @@ async function saveMediaSettings() {
             serverUrl: document.getElementById('embyServer').value,
             apiKey: document.getElementById('embyApiKey').value,
             proxy: {
-                enable: enableEmbyProxy
+                enable: enableEmbyProxy,
+                port: parseInt(document.getElementById('embyProxyPort').value) || 8097
             }
         },
         cloudSaver: {

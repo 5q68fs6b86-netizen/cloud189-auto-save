@@ -110,6 +110,7 @@ docker run -d \
   -v /yourpath/data:/home/data \
   -v /yourpath/strm:/home/strm \
   -p 3000:3000 \
+  -p 8097:8097 \
   --restart unless-stopped \
   --name cloud189 \
   -e PUID=0 \
@@ -118,6 +119,7 @@ docker run -d \
   xia1307/cloud189-auto-save
   ```
 注意: `yourpath`请替换为你宿主机的目录; 如果不需要strm功能, 可以不挂载strm目录, 允许配置PUID和PGID, 默认0。若日志出现 `InvalidSessionKey` / `check ip error`，通常是双栈网络下 IPv4/IPv6 出口切换导致，建议保留 `-e DNS_LOOKUP_IP_VERSION=ipv4`。
+如需使用 Emby 独立反代端口，请保留 `-p 8097:8097`，并在系统设置中开启 Emby 反代。
 
 ### 使用 GHCR 镜像
 
@@ -126,6 +128,7 @@ docker run -d \
   -v /yourpath/data:/home/data \
   -v /yourpath/strm:/home/strm \
   -p 3000:3000 \
+  -p 8097:8097 \
   --restart unless-stopped \
   --name cloud189 \
   -e PUID=0 \

@@ -1,76 +1,106 @@
 class Cloud189Utils {
-    // 解析分享码
-    static parseShareCode(shareLink) {
-        // 解析分享链接
-        let shareCode;
+    static SHARE_CODE_PATTERN = /^(?:uuid)?[a-zA-Z0-9_-]{8,}$/;
+
+    static _decodeShareText(shareText = '') {
+        try {
+            return decodeURIComponent(shareText);
+        } catch (error) {
+            return shareText;
+        }
+    }
+
+    static _normalizeShareText(shareText = '') {
+        return this._decodeShareText(String(shareText || '')).replace(/\s/g, '');
+    }
+
+    static _extractShareCodeFromUrl(shareLink) {
         const shareUrl = new URL(shareLink);
+        let shareCode = '';
         if (shareUrl.origin.includes('content.21cn.com')) {
-            // 处理订阅链接
-            const params = new URLSearchParams(shareUrl.hash.split('?')[1]);
-            shareCode = params.get('shareCode');
+            const hashQuery = shareUrl.hash.includes('?') ? shareUrl.hash.split('?')[1] : '';
+            const hashParams = new URLSearchParams(hashQuery);
+            shareCode = hashParams.get('shareCode') || shareUrl.searchParams.get('shareCode');
         } else if (shareUrl.pathname === '/web/share') {
             shareCode = shareUrl.searchParams.get('code');
         } else if (shareUrl.pathname.startsWith('/t/')) {
             shareCode = shareUrl.pathname.split('/').pop();
-        }else if (shareUrl.hash && shareUrl.hash.includes('/t/')) {
-            shareCode = shareUrl.hash.split('/').pop();
-        }else if (shareUrl.pathname.includes('share.html')) {
-            // 其他可能的 share.html 格式
+        } else if (shareUrl.hash && shareUrl.hash.includes('/t/')) {
+            shareCode = shareUrl.hash.split('/').pop()?.split('?')[0];
+        } else if (shareUrl.pathname.includes('share.html')) {
             const hashParts = shareUrl.hash.split('/');
-            shareCode = hashParts[hashParts.length - 1];
+            shareCode = hashParts[hashParts.length - 1]?.split('?')[0];
         }
-        
+        return shareCode || '';
+    }
+
+    static _buildSubscriptionShareUrl(shareCode) {
+        return `https://content.21cn.com/h5/#/home?shareCode=${encodeURIComponent(shareCode)}`;
+    }
+
+    // 解析分享码
+    static parseShareCode(shareLink) {
+        const normalizedShareLink = this._normalizeShareText(shareLink);
+        if (this.SHARE_CODE_PATTERN.test(normalizedShareLink)) {
+            return normalizedShareLink;
+        }
+
+        let shareCode = '';
+        try {
+            shareCode = this._extractShareCodeFromUrl(normalizedShareLink);
+        } catch (error) {
+            throw new Error('无效的分享链接');
+        }
+
         if (!shareCode) throw new Error('无效的分享链接');
         return shareCode
     }
 
     static parseCloudShare(shareText) {
-        // 移除所有空格
-        shareText = shareText.replace(/\s/g, '');
-        shareText = decodeURIComponent(shareText);
-        // 提取基本URL和访问码
+        shareText = this._normalizeShareText(shareText);
         let url = '';
         let accessCode = '';
-        
-        // 匹配访问码的几种常见格式
+
         const accessCodePatterns = [
-            /[（(]访问码[：:]\s*([a-zA-Z0-9]{4})[)）]/,  // （访问码：xxxx）
-            /[（(]提取码[：:]\s*([a-zA-Z0-9]{4})[)）]/,  // （提取码：xxxx）
-            /访问码[：:]\s*([a-zA-Z0-9]{4})/,           // 访问码：xxxx
-            /提取码[：:]\s*([a-zA-Z0-9]{4})/,           // 提取码：xxxx
-            /[（(]([a-zA-Z0-9]{4})[)）]/                // （xxxx）
+            /[（(]访问码[：:]\s*([a-zA-Z0-9]{4})[)）]/,
+            /[（(]提取码[：:]\s*([a-zA-Z0-9]{4})[)）]/,
+            /访问码[：:]\s*([a-zA-Z0-9]{4})/,
+            /提取码[：:]\s*([a-zA-Z0-9]{4})/,
+            /[（(]([a-zA-Z0-9]{4})[)）]/
         ];
-        
-        // 尝试匹配访问码
+
         for (const pattern of accessCodePatterns) {
             const match = shareText.match(pattern);
             if (match) {
                 accessCode = match[1];
-                // 从原文本中移除访问码部分
                 shareText = shareText.replace(match[0], '');
                 break;
             }
         }
-        
-        // 提取URL - 支持两种格式
-        const urlPatterns = [
-            /(https?:\/\/cloud\.189\.cn\/web\/share\?[^\s]+)/,     // web/share格式
-            /(https?:\/\/cloud\.189\.cn\/t\/[a-zA-Z0-9]+)/,        // t/xxx格式
-            /(https?:\/\/h5\.cloud\.189\.cn\/share\.html#\/t\/[a-zA-Z0-9]+)/, // h5分享格式
-            /(https?:\/\/[^/]+\/web\/share\?[^\s]+)/,              // 其他域名的web/share格式
-            /(https?:\/\/[^/]+\/t\/[a-zA-Z0-9]+)/,                 // 其他域名的t/xxx格式
-            /(https?:\/\/[^/]+\/share\.html[^\s]*)/,               // share.html格式
-            /(https?:\/\/content\.21cn\.com[^\s]+)/                // 订阅链接格式
-        ];
-    
-        for (const pattern of urlPatterns) {
-            const urlMatch = shareText.match(pattern);
-            if (urlMatch) {
-                url = urlMatch[1];
-                break;
+
+        shareText = this._normalizeShareText(shareText);
+
+        if (this.SHARE_CODE_PATTERN.test(shareText)) {
+            url = this._buildSubscriptionShareUrl(shareText);
+        } else {
+            const urlPatterns = [
+                /(https?:\/\/cloud\.189\.cn\/web\/share\?[^\s]+)/,
+                /(https?:\/\/cloud\.189\.cn\/t\/[a-zA-Z0-9_-]+)/,
+                /(https?:\/\/h5\.cloud\.189\.cn\/share\.html#\/t\/[a-zA-Z0-9_-]+)/,
+                /(https?:\/\/[^/]+\/web\/share\?[^\s]+)/,
+                /(https?:\/\/[^/]+\/t\/[a-zA-Z0-9_-]+)/,
+                /(https?:\/\/[^/]+\/share\.html[^\s]*)/,
+                /(https?:\/\/content\.21cn\.com[^\s]+)/
+            ];
+
+            for (const pattern of urlPatterns) {
+                const urlMatch = shareText.match(pattern);
+                if (urlMatch) {
+                    url = urlMatch[1];
+                    break;
+                }
             }
         }
-        
+
         return {
             url: url,
             accessCode: accessCode

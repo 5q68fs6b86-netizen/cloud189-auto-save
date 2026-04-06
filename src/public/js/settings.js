@@ -80,6 +80,7 @@ async function loadSettings() {
             document.getElementById('enableEmbyProxy').checked = settings.emby?.proxy?.enable || false;
             document.getElementById('embyServer').value = settings.emby?.serverUrl || '';
             document.getElementById('embyApiKey').value = settings.emby?.apiKey || '';
+            document.getElementById('embyProxyPort').value = settings.emby?.proxy?.port || 8097;
 
             // tg机器人设置
             document.getElementById('enableTgBot').checked = settings.telegram?.bot?.enable || false;

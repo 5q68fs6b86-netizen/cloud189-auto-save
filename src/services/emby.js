@@ -34,8 +34,11 @@ class EmbyService {
         this.proxyEnabled = !!ConfigService.getConfigValue('emby.proxy.enable');
     }
 
-    getProxyBasePath() {
-        return '/emby-proxy';
+    getProxyBasePath(options = {}) {
+        if (typeof options === 'string') {
+            return options || '';
+        }
+        return options.basePath || '/emby-proxy';
     }
 
     isProxyEnabled() {
@@ -43,15 +46,18 @@ class EmbyService {
         return this.proxyEnabled;
     }
 
-    async handleProxyRequest(req, res) {
+    async handleProxyRequest(req, res, options = {}) {
         this._refreshConfig();
         if (!this.embyUrl) {
             res.status(503).json({ success: false, error: 'Emby 服务器地址未配置' });
             return;
         }
 
-        const proxyBasePath = this.getProxyBasePath();
-        const relativePath = (req.originalUrl || req.url || '').replace(new RegExp(`^${proxyBasePath}`), '') || '/';
+        const proxyBasePath = this.getProxyBasePath(options);
+        const currentUrl = req.originalUrl || req.url || '/';
+        const relativePath = proxyBasePath
+            ? (currentUrl.replace(new RegExp(`^${proxyBasePath}`), '') || '/')
+            : currentUrl || '/';
 
         if (this.proxyEnabled && this._isPlaybackRequest(relativePath)) {
             try {
@@ -66,7 +72,7 @@ class EmbyService {
             }
         }
 
-        await this._forwardToEmby(req, res, relativePath);
+        await this._forwardToEmby(req, res, relativePath, proxyBasePath);
     }
 
 
@@ -226,7 +232,7 @@ class EmbyService {
         return upstream.toString();
     }
 
-    async _forwardToEmby(req, res, relativePath) {
+    async _forwardToEmby(req, res, relativePath, proxyBasePath = '/emby-proxy') {
         const targetUrl = this._buildProxyTargetUrl(relativePath);
         const headers = {
             ...req.headers,
@@ -256,7 +262,7 @@ class EmbyService {
                     continue;
                 }
                 if (key.toLowerCase() === 'location') {
-                    res.setHeader(key, this._rewriteProxyLocation(String(value)));
+                    res.setHeader(key, this._rewriteProxyLocation(String(value), proxyBasePath));
                     continue;
                 }
                 res.setHeader(key, value);
@@ -270,13 +276,15 @@ class EmbyService {
         upstream.pipe(res);
     }
 
-    _rewriteProxyLocation(location) {
+    _rewriteProxyLocation(location, proxyBasePath = '/emby-proxy') {
         if (!location || !this.embyUrl) {
             return location;
         }
-        const proxyBasePath = this.getProxyBasePath();
         if (location.startsWith(this.embyUrl)) {
             return `${proxyBasePath}${location.substring(this.embyUrl.length) || '/'}`;
+        }
+        if (location.startsWith('/') && proxyBasePath && !location.startsWith(proxyBasePath)) {
+            return `${proxyBasePath}${location}`;
         }
         return location;
     }

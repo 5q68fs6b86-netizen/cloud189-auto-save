@@ -949,7 +949,9 @@
                             <input type="text" id="embyServer" placeholder="例如: http://localhost:8096">
                             <label for="embyApiKey">API Key</label>
                             <input type="text" id="embyApiKey" placeholder="Emby API Key">
-                            <small class="form-text">启用后可通过 <code>/emby-proxy</code> 访问 Emby，播放请求会优先尝试 302 到天翼直链；其余请求会回源到 Emby。</small>
+                            <label for="embyProxyPort">独立反代端口</label>
+                            <input type="number" id="embyProxyPort" placeholder="例如: 8097">
+                            <small class="form-text">启用后除了可通过 <code>/emby-proxy</code> 访问外，还会额外启动一个独立端口（默认 <code>8097</code>）直接反代 Emby 根路径，播放请求会优先尝试 302 到天翼直链；其余请求会回源到 Emby。</small>
                         </div>
                     </div>
                 </div>
@@ -1249,7 +1251,7 @@
                 </div>
                 <div class="form-group">
                     <label for="subscriptionResourceShareLink">分享链接</label>
-                    <input type="text" id="subscriptionResourceShareLink" required placeholder="支持自动解析访问码">
+                    <input type="text" id="subscriptionResourceShareLink" required placeholder="支持分享链接、订阅码或 uuid，自动解析访问码">
                 </div>
                 <div class="form-group">
                     <label for="subscriptionResourceAccessCode">访问码</label>

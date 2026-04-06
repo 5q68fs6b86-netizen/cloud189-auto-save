@@ -86,7 +86,8 @@ class ConfigService {
         serverUrl: '',
         apiKey: '',
         proxy: {
-          enable: false
+          enable: false,
+          port: 8097
         }
       },
       cloudSaver: {

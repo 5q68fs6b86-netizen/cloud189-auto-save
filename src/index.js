@@ -30,13 +30,88 @@ const { LazyShareStrmService } = require('./services/lazyShareStrm');
 const { OrganizerService } = require('./services/organizer');
 const { AutoSeriesService } = require('./services/autoSeries');
 
-const app = express();
-app.use(cors({
-    origin: '*', // 允许所有来源
+const appPort = Number(process.env.PORT || 3000);
+let embyStandaloneProxyServer = null;
+const corsOptions = {
+    origin: '*',
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
     allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'x-api-key'],
     credentials: true
-}));
+};
+
+const getStandaloneEmbyProxyPort = () => {
+    const configuredPort = Number(
+        ConfigService.getConfigValue('emby.proxy.port')
+        || process.env.EMBY_PROXY_PORT
+        || 8097
+    );
+    return Number.isInteger(configuredPort) && configuredPort > 0 ? configuredPort : 8097;
+};
+
+const closeStandaloneEmbyProxyServer = async () => {
+    if (!embyStandaloneProxyServer) {
+        return;
+    }
+
+    const server = embyStandaloneProxyServer;
+    embyStandaloneProxyServer = null;
+    await new Promise((resolve) => {
+        server.close((error) => {
+            if (error) {
+                console.error('关闭 Emby 独立反代端口失败:', error.message);
+            } else {
+                console.log('Emby 独立反代端口已关闭');
+            }
+            resolve();
+        });
+    });
+};
+
+const createStandaloneEmbyProxyApp = (embyService) => {
+    const proxyApp = express();
+    proxyApp.use(cors(corsOptions));
+    proxyApp.use(async (req, res) => {
+        await embyService.handleProxyRequest(req, res, { basePath: '' });
+    });
+    return proxyApp;
+};
+
+const syncStandaloneEmbyProxyServer = async (embyService) => {
+    const shouldEnableStandaloneProxy = !!ConfigService.getConfigValue('emby.proxy.enable');
+    const proxyPort = getStandaloneEmbyProxyPort();
+
+    if (!shouldEnableStandaloneProxy) {
+        await closeStandaloneEmbyProxyServer();
+        return;
+    }
+
+    if (proxyPort === appPort) {
+        console.warn(`Emby 独立反代端口 ${proxyPort} 与主服务端口冲突，已跳过启动`);
+        await closeStandaloneEmbyProxyServer();
+        return;
+    }
+
+    if (embyStandaloneProxyServer) {
+        const currentPort = embyStandaloneProxyServer.address()?.port;
+        if (currentPort === proxyPort) {
+            return;
+        }
+        await closeStandaloneEmbyProxyServer();
+    }
+
+    const proxyApp = createStandaloneEmbyProxyApp(embyService);
+    await new Promise((resolve, reject) => {
+        const server = proxyApp.listen(proxyPort, () => {
+            embyStandaloneProxyServer = server;
+            console.log(`Emby 独立反代运行在 http://localhost:${proxyPort}`);
+            resolve();
+        });
+        server.once('error', reject);
+    });
+};
+
+const app = express();
+app.use(cors(corsOptions));
 app.use(express.json());
 
 app.use(session({
@@ -169,7 +244,7 @@ AppDataSource.initialize().then(async () => {
     await SchedulerService.initStrmConfigJobs(strmConfigRepo, strmConfigService);
 
     app.use('/emby-proxy', async (req, res) => {
-        await embyService.handleProxyRequest(req, res);
+        await embyService.handleProxyRequest(req, res, { basePath: '/emby-proxy' });
     });
     
     // 账号相关API
@@ -1002,16 +1077,21 @@ AppDataSource.initialize().then(async () => {
 
     // 保存媒体配置
     app.post('/api/settings/media', async (req, res) => {
-        const settings = req.body;
-        // 如果cloudSaver的配置变更 就清空cstoken.json
-        if (settings.cloudSaver?.baseUrl != ConfigService.getConfigValue('cloudSaver.baseUrl')
-        || settings.cloudSaver?.username != ConfigService.getConfigValue('cloudSaver.username')
-        || settings.cloudSaver?.password != ConfigService.getConfigValue('cloudSaver.password')
-    ) {
-            clearCloudSaverToken();
+        try {
+            const settings = req.body;
+            // 如果cloudSaver的配置变更 就清空cstoken.json
+            if (settings.cloudSaver?.baseUrl != ConfigService.getConfigValue('cloudSaver.baseUrl')
+            || settings.cloudSaver?.username != ConfigService.getConfigValue('cloudSaver.username')
+            || settings.cloudSaver?.password != ConfigService.getConfigValue('cloudSaver.password')
+        ) {
+                clearCloudSaverToken();
+            }
+            ConfigService.setConfig(settings)
+            await syncStandaloneEmbyProxyServer(embyService);
+            res.json({success: true, data: null})
+        } catch (error) {
+            res.json({success: false, error: error.message})
         }
-        ConfigService.setConfig(settings)
-        res.json({success: true, data: null})
     })
 
     app.post('/api/settings/regex-presets', async (req, res) => {
@@ -1298,9 +1378,13 @@ AppDataSource.initialize().then(async () => {
     // 初始化cloudsaver
     setupCloudSaverRoutes(app);
     // 启动服务器
-    const port = process.env.PORT || 3000;
-    app.listen(port, () => {
-        console.log(`服务器运行在 http://localhost:${port}`);
+    app.listen(appPort, async () => {
+        console.log(`服务器运行在 http://localhost:${appPort}`);
+        try {
+            await syncStandaloneEmbyProxyServer(embyService);
+        } catch (error) {
+            console.error('启动 Emby 独立反代端口失败:', error.message);
+        }
     });
 }).catch(error => {
     console.error('数据库连接失败:', error);

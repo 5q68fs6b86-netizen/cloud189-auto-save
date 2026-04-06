@@ -57,7 +57,7 @@ RUN mkdir -p /home/strm
 # 挂载点
 VOLUME ["/home/data", "/home/strm"]
 # 暴露端口
-EXPOSE 3000
+EXPOSE 3000 8097
 
 # 启动命令
 CMD ["yarn", "start"]
