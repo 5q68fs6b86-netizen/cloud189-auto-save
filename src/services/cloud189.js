@@ -76,6 +76,12 @@ class Cloud189Service {
                     if (responseBody.res_code === "ShareAuditWaiting") {
                         return responseBody;
                     }
+                    if (responseBody.res_code === "RequestResubmit") {
+                        return {
+                            res_code: "RequestResubmit",
+                            res_msg: responseBody.res_message || responseBody.res_msg || "重复提交请求"
+                        };
+                    }
                     if (responseBody.res_code === "FileAlreadyExists") {
                         return {
                             res_code: "FileAlreadyExists",

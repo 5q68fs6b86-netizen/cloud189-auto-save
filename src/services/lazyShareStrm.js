@@ -18,6 +18,7 @@ class LazyShareStrmService {
         this.organizerService = new OrganizerService(taskService);
         this.cache = new Map();
         this.inflight = new Map();
+        this.transferInflight = new Map();
         this.cacheTtlMs = 60 * 1000;
     }
 
@@ -190,8 +191,7 @@ class LazyShareStrmService {
         let targetFile = await this._findFileByName(cloud189, targetFolderId, payload.fileName);
 
         if (!targetFile) {
-            await this._saveShareFile(cloud189, payload, targetFolderId);
-            targetFile = await this._findFileByName(cloud189, targetFolderId, payload.fileName);
+            targetFile = await this._ensureTransferredFile(cloud189, payload, targetFolderId);
         }
 
         if (!targetFile) {
@@ -457,6 +457,46 @@ class LazyShareStrmService {
         const folderInfo = await cloud189.listFiles(folderId);
         const files = folderInfo?.fileListAO?.fileList || [];
         return files.find((file) => file.name === fileName) || null;
+    }
+
+    _getTransferKey(payload, targetFolderId) {
+        return [payload.accountId, payload.shareId, payload.fileId, targetFolderId, payload.fileName].join(':');
+    }
+
+    async _ensureTransferredFile(cloud189, payload, targetFolderId) {
+        const transferKey = this._getTransferKey(payload, targetFolderId);
+        if (this.transferInflight.has(transferKey)) {
+            return await this.transferInflight.get(transferKey);
+        }
+
+        const pending = (async () => {
+            try {
+                await this._saveShareFile(cloud189, payload, targetFolderId);
+            } catch (error) {
+                if (error?.code !== 'RequestResubmit') {
+                    throw error;
+                }
+                logTaskEvent(`懒转存复用已有转存任务: ${payload.fileName}`);
+            }
+
+            return await this._waitForTransferredFile(cloud189, targetFolderId, payload.fileName);
+        })().finally(() => this.transferInflight.delete(transferKey));
+
+        this.transferInflight.set(transferKey, pending);
+        return await pending;
+    }
+
+    async _waitForTransferredFile(cloud189, targetFolderId, fileName, maxAttempts = 15, intervalMs = 500) {
+        for (let index = 0; index < maxAttempts; index++) {
+            const file = await this._findFileByName(cloud189, targetFolderId, fileName);
+            if (file) {
+                return file;
+            }
+            if (index < maxAttempts - 1) {
+                await new Promise((resolve) => setTimeout(resolve, intervalMs));
+            }
+        }
+        return null;
     }
 
     async _saveShareFile(cloud189, payload, targetFolderId) {

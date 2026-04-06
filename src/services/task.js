@@ -1202,7 +1202,10 @@ class TaskService {
             throw new Error('批量任务处理失败');
         }
         if (resp.res_code != 0) {
-            throw new Error(resp.res_msg);
+            const error = new Error(resp.res_msg || '批量任务处理失败');
+            error.code = resp.res_code;
+            error.response = resp;
+            throw error;
         }
         logTaskEvent(`批量任务处理中: ${JSON.stringify(resp)}`)
         if (!await this.checkTaskStatus(cloud189,resp.taskId, 0 , batchTaskDto)) {
