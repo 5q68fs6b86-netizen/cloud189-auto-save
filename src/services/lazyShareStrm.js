@@ -470,26 +470,58 @@ class LazyShareStrmService {
         }
 
         const pending = (async () => {
-            await this._submitShareSaveTask(cloud189, payload, targetFolderId);
-            return await this._waitForTransferredFile(cloud189, targetFolderId, payload.fileName);
+            const submitResult = await this._submitShareSaveTask(cloud189, payload, targetFolderId);
+            return await this._waitForTransferredFile(cloud189, targetFolderId, payload.fileName, submitResult);
         })().finally(() => this.transferInflight.delete(transferKey));
 
         this.transferInflight.set(transferKey, pending);
         return await pending;
     }
 
-    async _waitForTransferredFile(cloud189, targetFolderId, fileName, maxAttempts = 60, intervalMs = 1000) {
+    async _waitForTransferredFile(cloud189, targetFolderId, fileName, submitResult = {}, maxAttempts = 120, intervalMs = 1000) {
+        let lastTaskStatus = null;
         for (let index = 0; index < maxAttempts; index++) {
             const file = await this._findFileByName(cloud189, targetFolderId, fileName);
             if (file) {
                 logTaskEvent(`懒转存完成: ${fileName}`);
                 return file;
             }
+
+            if (submitResult.taskId && (index === 0 || index % 3 === 2)) {
+                lastTaskStatus = await this._syncShareSaveTask(cloud189, submitResult.taskId, submitResult.batchTaskDto);
+            }
+
             if (index < maxAttempts - 1) {
                 await new Promise((resolve) => setTimeout(resolve, intervalMs));
             }
         }
-        return null;
+        const statusMessage = lastTaskStatus == null ? '' : `, 最后任务状态: ${lastTaskStatus}`;
+        throw new Error(`懒转存完成后未找到目标文件${statusMessage}`);
+    }
+
+    async _syncShareSaveTask(cloud189, taskId, batchTaskDto) {
+        const task = await cloud189.checkTaskStatus(taskId, batchTaskDto);
+        if (!task) {
+            return null;
+        }
+
+        const taskStatus = Number(task.taskStatus);
+        if (taskStatus === 2) {
+            const conflictTaskInfo = await cloud189.getConflictTaskInfo(taskId, batchTaskDto);
+            const taskInfos = conflictTaskInfo?.taskInfos || [];
+            if (conflictTaskInfo?.targetFolderId && taskInfos.length) {
+                for (const taskInfo of taskInfos) {
+                    taskInfo.dealWay = 1;
+                }
+                await cloud189.manageBatchTask(taskId, conflictTaskInfo.targetFolderId, taskInfos, batchTaskDto);
+                logTaskEvent(`懒转存任务检测到冲突，已自动忽略冲突项: ${taskId}`);
+            }
+        }
+
+        if (taskStatus !== -1 && taskStatus !== 1 && taskStatus !== 3) {
+            logTaskEvent(`懒转存任务状态同步: ${taskId} => ${task.taskStatus}`);
+        }
+        return taskStatus;
     }
 
     async _submitShareSaveTask(cloud189, payload, targetFolderId) {
@@ -510,12 +542,16 @@ class LazyShareStrmService {
         }
         if (resp.res_code === 'RequestResubmit') {
             logTaskEvent(`懒转存复用已有转存任务: ${payload.fileName}`);
-            return;
+            return { taskId: null, batchTaskDto };
         }
         if (Number(resp.res_code) !== 0) {
             throw new Error(resp.res_msg || resp.res_message || '懒转存任务提交失败');
         }
         logTaskEvent(`懒转存任务已提交: ${JSON.stringify(resp)}`);
+        return {
+            taskId: resp.taskId ? String(resp.taskId) : null,
+            batchTaskDto
+        };
     }
 }
 
