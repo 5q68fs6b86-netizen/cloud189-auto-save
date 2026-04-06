@@ -470,15 +470,7 @@ class LazyShareStrmService {
         }
 
         const pending = (async () => {
-            try {
-                await this._saveShareFile(cloud189, payload, targetFolderId);
-            } catch (error) {
-                if (error?.code !== 'RequestResubmit') {
-                    throw error;
-                }
-                logTaskEvent(`懒转存复用已有转存任务: ${payload.fileName}`);
-            }
-
+            await this._submitShareSaveTask(cloud189, payload, targetFolderId);
             return await this._waitForTransferredFile(cloud189, targetFolderId, payload.fileName);
         })().finally(() => this.transferInflight.delete(transferKey));
 
@@ -486,10 +478,11 @@ class LazyShareStrmService {
         return await pending;
     }
 
-    async _waitForTransferredFile(cloud189, targetFolderId, fileName, maxAttempts = 15, intervalMs = 500) {
+    async _waitForTransferredFile(cloud189, targetFolderId, fileName, maxAttempts = 60, intervalMs = 1000) {
         for (let index = 0; index < maxAttempts; index++) {
             const file = await this._findFileByName(cloud189, targetFolderId, fileName);
             if (file) {
+                logTaskEvent(`懒转存完成: ${fileName}`);
                 return file;
             }
             if (index < maxAttempts - 1) {
@@ -499,7 +492,7 @@ class LazyShareStrmService {
         return null;
     }
 
-    async _saveShareFile(cloud189, payload, targetFolderId) {
+    async _submitShareSaveTask(cloud189, payload, targetFolderId) {
         logTaskEvent(`懒转存开始: ${payload.fileName}`);
         const batchTaskDto = new BatchTaskDto({
             taskInfos: JSON.stringify([{
@@ -511,8 +504,18 @@ class LazyShareStrmService {
             targetFolderId,
             shareId: payload.shareId
         });
-        await this.taskService.createBatchTask(cloud189, batchTaskDto);
-        logTaskEvent(`懒转存完成: ${payload.fileName}`);
+        const resp = await cloud189.createBatchTask(batchTaskDto);
+        if (!resp) {
+            throw new Error('懒转存任务提交失败');
+        }
+        if (resp.res_code === 'RequestResubmit') {
+            logTaskEvent(`懒转存复用已有转存任务: ${payload.fileName}`);
+            return;
+        }
+        if (Number(resp.res_code) !== 0) {
+            throw new Error(resp.res_msg || resp.res_message || '懒转存任务提交失败');
+        }
+        logTaskEvent(`懒转存任务已提交: ${JSON.stringify(resp)}`);
     }
 }
 
