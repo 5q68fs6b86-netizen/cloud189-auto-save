@@ -4,29 +4,32 @@ FROM node:16.19.0-slim AS builder
 # 设置工作目录
 WORKDIR /home
 
-# 复制源码
-COPY . .
+# 先复制依赖清单，尽量命中 Docker 层缓存
+COPY package.json yarn.lock ./
+COPY vender/cloud189-sdk/package.json vender/cloud189-sdk/yarn.lock ./vender/cloud189-sdk/
 
-# 安装cloud189-sdk依赖
-RUN cd vender/cloud189-sdk && \
-    yarn install && \
-    yarn build
+# 安装依赖
+RUN cd vender/cloud189-sdk && yarn install --frozen-lockfile
+RUN yarn install --frozen-lockfile
 
-# 安装项目依赖
-RUN yarn install && \
-    yarn build
+# 再复制源码，避免源码改动导致依赖层失效
+COPY tsconfig.json ./
+COPY src ./src
+COPY vender/cloud189-sdk ./vender/cloud189-sdk
+
+# 构建
+RUN cd vender/cloud189-sdk && yarn build
+RUN yarn build
 
 # 构建生产版本
-FROM node:16.19.0-alpine AS production
+FROM node:16.19.0-slim AS production
 
 # 设置工作目录
 WORKDIR /home
 
-COPY --from=builder /home/package*.json ./
+COPY --from=builder /home/package.json ./
 COPY --from=builder /home/yarn.lock ./
-
-# 安装生产依赖
-RUN yarn install --production
+COPY --from=builder /home/node_modules ./node_modules
 
 # 复制构建好的代码
 COPY --from=builder /home/dist ./dist
@@ -35,8 +38,9 @@ COPY --from=builder /home/src/public ./dist/public
 COPY --from=builder /home/vender/cloud189-sdk/dist ./vender/cloud189-sdk/dist
 
 # 安装必要的依赖项
-RUN apk update && \
-    apk add --no-cache ca-certificates tzdata
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends ca-certificates tzdata && \
+    rm -rf /var/lib/apt/lists/*
     
 
 # 设置时区
