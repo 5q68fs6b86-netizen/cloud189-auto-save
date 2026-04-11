@@ -302,6 +302,13 @@ class LazyShareStrmService {
         const normalizedLocalPathPrefix = this._normalizeRelativePath(localPathPrefix);
         const fallbackRootName = this._normalizeRelativePath(rootName);
         const normalizedResourceName = String(resourceName || rootName || '').trim();
+        const fallbackTargetRoot = this._resolveFallbackTargetRoot({
+            localPathPrefix: normalizedLocalPathPrefix,
+            rootName: fallbackRootName,
+            resourceName: normalizedResourceName,
+            enableOrganizer,
+            task
+        });
         const preparedFiles = files.map(file => ({
             ...file,
             relativeDir: this._normalizeRelativePath(file.relativeDir || ''),
@@ -311,7 +318,7 @@ class LazyShareStrmService {
 
         if (!enableOrganizer) {
             return {
-                targetRoot: this._normalizeRelativePath(path.join(normalizedLocalPathPrefix, fallbackRootName)),
+                targetRoot: fallbackTargetRoot,
                 files: preparedFiles
             };
         }
@@ -343,8 +350,9 @@ class LazyShareStrmService {
         }
 
         if (!resourceInfo && !resolvedTmdbInfo) {
+            logTaskEvent(`懒转存整理回退到安全目录: ${fallbackTargetRoot || '(根目录)'}`);
             return {
-                targetRoot: this._normalizeRelativePath(path.join(normalizedLocalPathPrefix, fallbackRootName)),
+                targetRoot: fallbackTargetRoot,
                 files: preparedFiles
             };
         }
@@ -394,11 +402,37 @@ class LazyShareStrmService {
         }
     }
 
+    _resolveFallbackTargetRoot({ localPathPrefix = '', rootName = '', resourceName = '', enableOrganizer = false, task = null }) {
+        const normalizedLocalPathPrefix = this._normalizeRelativePath(localPathPrefix);
+        if (enableOrganizer && task?.realFolderName) {
+            const taskRelativeRoot = this._getTaskRelativeRootPath(task.realFolderName);
+            if (taskRelativeRoot) {
+                return this._normalizeRelativePath(path.join(normalizedLocalPathPrefix, taskRelativeRoot));
+            }
+        }
+
+        const safeRootName = this._normalizeRelativePath(rootName || this._sanitizePathSegment(resourceName));
+        return this._normalizeRelativePath(path.join(normalizedLocalPathPrefix, safeRootName));
+    }
+
     _normalizeRelativePath(targetPath = '') {
         return String(targetPath || '')
             .replace(/\\/g, '/')
             .replace(/^\/+|\/+$/g, '')
             .replace(/\/{2,}/g, '/');
+    }
+
+    _getTaskRelativeRootPath(realFolderName = '') {
+        const normalizedPath = this._normalizeRelativePath(realFolderName);
+        const index = normalizedPath.indexOf('/');
+        return index >= 0 ? normalizedPath.substring(index + 1) : normalizedPath;
+    }
+
+    _sanitizePathSegment(value = '') {
+        return String(value || '')
+            .replace(/[<>:"/\\|?*]/g, '')
+            .replace(/\s+/g, ' ')
+            .trim();
     }
 
     _getCacheKey(payload) {

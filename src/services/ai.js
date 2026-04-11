@@ -11,6 +11,47 @@ class AIService {
             frequency_penalty: 0,
             presence_penalty: 0
         };
+        this.retryConfig = {
+            maxAttempts: 3,
+            delayMs: 1500
+        };
+    }
+
+    async _retryOperation(operationName, executor, options = {}) {
+        const maxAttempts = Number(options.maxAttempts || this.retryConfig.maxAttempts || 1);
+        const delayMs = Number(options.delayMs || this.retryConfig.delayMs || 0);
+        let lastError = null;
+
+        for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+            try {
+                return await executor(attempt);
+            } catch (error) {
+                lastError = error;
+                const errorMessage = error?.message || String(error);
+                if (attempt >= maxAttempts) {
+                    throw error;
+                }
+                logTaskEvent(`${operationName}失败，第${attempt}/${maxAttempts}次尝试: ${errorMessage}，${delayMs}ms后重试`);
+                await new Promise(resolve => setTimeout(resolve, delayMs));
+            }
+        }
+
+        throw lastError || new Error(`${operationName}失败`);
+    }
+
+    _getCleanAIJsonText(rawData) {
+        if (rawData == null) {
+            throw new Error('AI返回内容为空');
+        }
+        const text = typeof rawData === 'string' ? rawData : String(rawData);
+        const cleanText = text
+            .replace(/```(?:json)?\s*|\s*```/g, '')
+            .replace(/^(?:json)?\s*/, '')
+            .trim();
+        if (!cleanText) {
+            throw new Error('AI返回内容为空');
+        }
+        return cleanText;
     }
 
     // 校验是否开启了ai
@@ -115,34 +156,33 @@ class AIService {
                 content: `资源路径：${resourcePath}\n文件夹列表：${JSON.stringify(dirs, null, 2)}`
             }
         ];
-        const response = await this.chat(messages, {
-            temperature: 0.1,
-            max_tokens: 3000
-        });
-
-        if (response.success) {
-            try {
-                let cleanData = response.data
-                    .replace(/```(?:json)?\s*|\s*```/g, '')
-                    .replace(/^(?:json)?\s*/, '')
-                    .trim();
+        try {
+            const result = await this._retryOperation('AI文件夹分析', async () => {
+                const response = await this.chat(messages, {
+                    temperature: 0.1,
+                    max_tokens: 3000
+                });
+                if (!response.success) {
+                    throw new Error(response.error || 'AI服务调用失败');
+                }
+                const cleanData = this._getCleanAIJsonText(response.data);
                 const result = JSON.parse(cleanData);
                 if (!this._validateFolderResponse(result)) {
                     throw new Error('AI返回格式不符合要求');
                 }
-                return {
-                    success: true,
-                    data: result
-                };
-            } catch (error) {
-                console.log("AI 解析结果格式错误: " + response.data)
-                return {
-                    success: false,
-                    error: '解析结果格式错误'
-                };
-            }
+                return result;
+            });
+            return {
+                success: true,
+                data: result
+            };
+        } catch (error) {
+            console.log("AI 解析结果格式错误:", error.message)
+            return {
+                success: false,
+                error: error.message || '解析结果格式错误'
+            };
         }
-        return response;
     }
 
     async simpleChatCompletion(resourcePath, files) {
@@ -245,20 +285,26 @@ class AIService {
                     ];
                 }
 
-                const response = await this.chat(messages, {
-                    temperature: 0.1,
-                    max_tokens: 3000 // 保持足够空间处理块
+                const chunkNumber = i / CHUNK_SIZE + 1;
+                const resultChunk = await this._retryOperation(`AI文件解析块 ${chunkNumber}`, async () => {
+                    const response = await this.chat(messages, {
+                        temperature: 0.1,
+                        max_tokens: 3000 // 保持足够空间处理块
+                    });
+                    if (!response.success) {
+                        throw new Error(`AI 调用失败 (块 ${chunkNumber}): ${response.error}`);
+                    }
+                    const cleanData = this._getCleanAIJsonText(response.data);
+                    const parsedChunk = JSON.parse(cleanData);
+                    if (i === 0) {
+                        if (!parsedChunk.episode || !Array.isArray(parsedChunk.episode)) {
+                            throw new Error(`AI 返回格式错误 (块 1): 缺少 'episode' 数组`);
+                        }
+                    } else if (!parsedChunk.episode || !Array.isArray(parsedChunk.episode)) {
+                        throw new Error(`AI 返回格式错误 (块 ${chunkNumber}): 缺少 'episode' 数组`);
+                    }
+                    return parsedChunk;
                 });
-
-                if (!response.success) {
-                    throw new Error(`AI 调用失败 (块 ${i / CHUNK_SIZE + 1}): ${response.error}`);
-                }
-
-                let cleanData = response.data
-                    .replace(/```(?:json)?\s*|\s*```/g, '')
-                    .replace(/^(?:json)?\s*/, '')
-                    .trim();
-                const resultChunk = JSON.parse(cleanData);
 
                 if (i === 0) {
                     // 存储第一次的基础信息
@@ -268,14 +314,8 @@ class AIService {
                         type: resultChunk.type,
                         season: resultChunk.season // 存储季编号
                     };
-                    if (!resultChunk.episode || !Array.isArray(resultChunk.episode)) {
-                        throw new Error(`AI 返回格式错误 (块 1): 缺少 'episode' 数组`);
-                    }
                     allEpisodes.push(...resultChunk.episode);
                 } else {
-                    if (!resultChunk.episode || !Array.isArray(resultChunk.episode)) {
-                        throw new Error(`AI 返回格式错误 (块 ${i / CHUNK_SIZE + 1}): 缺少 'episode' 数组`);
-                    }
                     // 对于后续块，确保 episode 里的 name 和 season 与 baseResult 一致
                     const correctedEpisodes = resultChunk.episode.map(ep => ({
                         ...ep,
@@ -403,37 +443,29 @@ class AIService {
                 ];
 
                 logTaskEvent(`AI过滤：调用AI处理块 ${chunkNumber}，描述: ${filterDescription}`);
-                const response = await this.chat(messages, {
-                    temperature: 0.1,
-                    max_tokens: 2000 // 调整 max_tokens 以适应 ID 列表的输出
-                });
+                const resultChunk = await this._retryOperation(`AI过滤块 ${chunkNumber}`, async () => {
+                    const response = await this.chat(messages, {
+                        temperature: 0.1,
+                        max_tokens: 2000 // 调整 max_tokens 以适应 ID 列表的输出
+                    });
+                    if (!response.success) {
+                        logTaskEvent(`AI过滤：处理块 ${chunkNumber} 失败 - ${response.error}`);
+                        throw new Error(`AI 调用失败 (块 ${chunkNumber}): ${response.error}`);
+                    }
 
-                if (!response.success) {
-                    logTaskEvent(`AI过滤：处理块 ${chunkNumber} 失败 - ${response.error}`);
-                    throw new Error(`AI 调用失败 (块 ${chunkNumber}): ${response.error}`);
-                }
+                    const cleanData = this._getCleanAIJsonText(response.data);
+                    const parsedChunk = JSON.parse(cleanData);
 
-                try {
-                    let cleanData = response.data
-                        .replace(/```(?:json)?\s*|\s*```/g, '')
-                        .replace(/^(?:json)?\s*/, '')
-                        .trim();
-                    const resultChunk = JSON.parse(cleanData);
-
-                    if (!Array.isArray(resultChunk) || !resultChunk.every(id => typeof id === 'string' || typeof id === 'number')) {
+                    if (!Array.isArray(parsedChunk) || !parsedChunk.every(id => typeof id === 'string' || typeof id === 'number')) {
                         logTaskEvent(`AI过滤：块 ${chunkNumber} 返回格式错误，期望得到 ID 字符串或数字数组。原始数据: ${response.data}`);
                         throw new Error(`AI 返回格式错误 (块 ${chunkNumber}): 期望得到 ID 字符串或数字数组`);
                     }
 
-                    logTaskEvent(`AI过滤：块 ${chunkNumber} 成功解析，得到 ${resultChunk.length} 个文件 ID。`);
-                    allKeptFileIds.push(...resultChunk); // 合并当前块的结果
+                    return parsedChunk;
+                });
 
-                } catch (error) {
-                    logTaskEvent(`AI过滤：解析块 ${chunkNumber} 响应失败 - ${error.message}。原始数据: ${response.data}`);
-                    console.error(`AI filterMediaFiles 解析块 ${chunkNumber} 结果格式错误:`, error.message, "原始数据:", response.data);
-                    // 抛出错误中断整个过滤过程
-                    throw new Error(`解析AI过滤结果格式错误 (块 ${chunkNumber}): ${error.message}`);
-                }
+                logTaskEvent(`AI过滤：块 ${chunkNumber} 成功解析，得到 ${resultChunk.length} 个文件 ID。`);
+                allKeptFileIds.push(...resultChunk); // 合并当前块的结果
             } // end for loop
 
             logTaskEvent(`AI过滤：所有块处理完成，总共保留 ${allKeptFileIds.length} 个文件 ID。`);
