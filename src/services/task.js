@@ -18,10 +18,30 @@ const cloud189Utils = require('../utils/Cloud189Utils');
 const alistService = require('./alistService');
 const { LazyShareStrmService } = require('./lazyShareStrm');
 const { CasService } = require('./casService');
+const { CasArchiveService } = require('./casArchiveService');
 const { AppDataSource } = require('../database');
 const { TaskProcessedFile } = require('../entities');
 const { parseMediaTitle } = require('../utils/mediaTitleParser');
-const { joinLocalStrmPath } = require('./mediaLibraryLayout');
+const { MediaLibraryLayoutService, joinLocalStrmPath } = require('./mediaLibraryLayout');
+
+function buildTaskTargetRelativePath(task = {}, mediaFile = {}, layout = null) {
+    const mediaPath = String(mediaFile.relativePath || mediaFile.name || '')
+        .replace(/\\/g, '/')
+        .replace(/^\/+|\/+$/g, '');
+    if (layout?.categoryName && layout?.resourceFolderName) {
+        return path.posix.join(layout.categoryName, layout.resourceFolderName, mediaPath);
+    }
+    let rootPath = String(task.realFolderName || task.shareFolderName || task.resourceName || '')
+        .replace(/\\/g, '/')
+        .replace(/^\/+|\/+$/g, '');
+    const targetName = String(task.targetFolderName || '').replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
+    if (targetName && rootPath.startsWith(`${targetName}/`)) {
+        rootPath = rootPath.slice(targetName.length + 1);
+    } else if (targetName && rootPath === targetName) {
+        rootPath = '';
+    }
+    return path.posix.join(rootPath, mediaPath);
+}
 
 class TaskService {
     constructor(taskRepo, accountRepo, taskProcessedFileRepo) {
@@ -1020,7 +1040,7 @@ class TaskService {
         return new Set(records.map(record => String(record.sourceFileId)));
     }
 
-    async _saveProcessedFileRecord(task, file, status, errorMessage = '') {
+    async _saveProcessedFileRecord(task, file, status, errorMessage = '', extra = {}) {
         const taskProcessedFileRepo = this._getTaskProcessedFileRepo();
         const restoredFileName = CasService.isCasFile(file.name)
             ? CasService.getOriginalFileName(file.name)
@@ -1060,7 +1080,8 @@ class TaskService {
             sourceShareId: task.shareId || '',
             restoredFileName,
             status,
-            lastError: (status === 'done' || status === 'completed') ? null : (errorMessage || null)
+            lastError: (status === 'done' || status === 'completed') ? null : (errorMessage || null),
+            ...extra
         }, ['taskId', 'sourceFileId']);
     }
 
@@ -1138,7 +1159,7 @@ class TaskService {
     }
 
     // 获取文件夹下的所有文件
-    async getAllFolderFiles(cloud189, task) {
+    async getAllFolderFiles(cloud189, task, options = {}) {
         if (task.enableSystemProxy) {
             throw new Error('系统代理模式已移除');
         }
@@ -1154,16 +1175,16 @@ class TaskService {
             const enableAutoCreateFolder = ConfigService.getConfigValue('task.enableAutoCreateFolder');
             if (enableAutoCreateFolder) {
                 await this._autoCreateFolder(cloud189, task);
-                return await this.getAllFolderFiles(cloud189, task);
+                return await this.getAllFolderFiles(cloud189, task, options);
             }
         }
         if (!folderInfo || !folderInfo.fileListAO) {
             return [];
         }
-        return await this._collectFolderFilesRecursive(cloud189, folderId, '', folderInfo);
+        return await this._collectFolderFilesRecursive(cloud189, folderId, '', folderInfo, options);
     }
 
-    async _collectFolderFilesRecursive(cloud189, folderId, relativeDir = '', folderInfo = null) {
+    async _collectFolderFilesRecursive(cloud189, folderId, relativeDir = '', folderInfo = null, options = {}) {
         folderInfo = folderInfo || await cloud189.listFiles(folderId);
         if (!folderInfo?.fileListAO) {
             return [];
@@ -1175,12 +1196,13 @@ class TaskService {
             relativeDir: currentRelativeDir,
             relativePath: currentRelativeDir ? path.join(currentRelativeDir, file.name) : file.name
         }));
-        const folderList = folderInfo.fileListAO.folderList || [];
+        const folderList = (folderInfo.fileListAO.folderList || [])
+            .filter(folder => options.includeCasArchive || !CasArchiveService.isReservedDirectory(folder.name));
         const childFileGroups = await this._mapWithConcurrency(folderList, 4, async (folder) => {
             const folderName = folder.name || folder.fileName || '';
             const folderId = folder.id || folder.fileId;
             const nextRelativeDir = currentRelativeDir ? path.join(currentRelativeDir, folderName) : folderName;
-            return await this._collectFolderFilesRecursive(cloud189, folderId, nextRelativeDir);
+            return await this._collectFolderFilesRecursive(cloud189, folderId, nextRelativeDir, null, options);
         });
         childFileGroups.forEach(childFiles => fileList.push(...childFiles));
         return fileList;
@@ -1338,7 +1360,13 @@ class TaskService {
                     throw new Error(`CAS恢复后未找到目标文件: ${restoreName}`);
                 }
 
-                await this._saveProcessedFileRecord(task, casFile, 'done');
+                await this._saveProcessedFileRecord(task, casFile, 'done', '', {
+                    transferredCasFileId: String(transferredCasFile.id),
+                    casSourceFolderId: String(task.realFolderId),
+                    restoredCloudFileId: String(restoredFile.id),
+                    casArchiveStatus: task.keepCasAfterRestore ? 'archive_pending' : 'none',
+                    casArchiveError: ''
+                });
 
                 // 非核心：清理源文件 (降级)
                 if (task.keepCasAfterRestore) {
@@ -1372,6 +1400,77 @@ class TaskService {
             }
         }
         return null;
+    }
+
+    async archivePendingCasFiles(task, cloud189 = null) {
+        if (!task?.keepCasAfterRestore) {
+            return { archived: 0, failed: 0, pending: 0 };
+        }
+        const account = task.account || await this._getAccountById(task.accountId);
+        if (!account) {
+            throw new Error('CAS归档账号不存在');
+        }
+        task.account = account;
+        cloud189 = cloud189 || Cloud189Service.getInstance(account);
+        const repo = this._getTaskProcessedFileRepo();
+        const records = await repo.find({ where: { taskId: task.id } });
+        const pendingRecords = records.filter(record =>
+            CasService.isCasFile(record.sourceFileName || '')
+            && ['archive_pending', 'archive_failed'].includes(record.casArchiveStatus)
+            && record.transferredCasFileId
+        );
+        if (!pendingRecords.length) {
+            return { archived: 0, failed: 0, pending: 0 };
+        }
+
+        const mediaFiles = await this.getFilesByTask(task);
+        const layout = new MediaLibraryLayoutService().parseTaskLibraryLayout(task);
+        const archiveService = new CasArchiveService();
+        let archived = 0;
+        let failed = 0;
+        let pending = 0;
+
+        for (const record of pendingRecords) {
+            const mediaFile = mediaFiles.find(file =>
+                String(file.id || '') === String(record.restoredCloudFileId || '')
+                || String(file.name || '') === String(record.restoredFileName || '').trim()
+            );
+            if (!mediaFile) {
+                pending++;
+                record.casArchiveStatus = 'archive_pending';
+                record.casArchiveError = '等待整理后的媒体文件出现';
+                await repo.save(record);
+                continue;
+            }
+            const mediaRelativePath = this._buildTaskTargetRelativePath(task, mediaFile, layout);
+            try {
+                const result = await archiveService.moveToArchive(
+                    cloud189,
+                    this,
+                    { id: record.transferredCasFileId, name: record.sourceFileName },
+                    task.targetFolderId,
+                    mediaRelativePath
+                );
+                record.casArchiveStatus = 'archive_done';
+                record.restoredCloudFileId = String(mediaFile.id || '');
+                record.casArchiveRelativePath = result.relativePath;
+                record.casArchiveFileId = result.fileId;
+                record.casArchiveError = '';
+                archived++;
+                logTaskEvent(`CAS已归档: ${result.relativePath}`, 'info', 'transfer');
+            } catch (error) {
+                record.casArchiveStatus = 'archive_failed';
+                record.casArchiveError = String(error.message || error).slice(0, 500);
+                failed++;
+                logTaskEvent(`CAS归档失败，保留源存根等待重试: ${record.sourceFileName} - ${error.message}`, 'warn', 'transfer');
+            }
+            await repo.save(record);
+        }
+        return { archived, failed, pending };
+    }
+
+    _buildTaskTargetRelativePath(task, mediaFile, layout = null) {
+        return buildTaskTargetRelativePath(task, mediaFile, layout);
     }
 
     async _getLazyStrmFiles(task, shareFiles) {
@@ -1601,7 +1700,11 @@ class TaskService {
                 return saveResults.join('\n');
             }
 
-            const folderFiles = await this.getAllFolderFiles(cloud189, task);
+            let folderFiles = await this.getAllFolderFiles(cloud189, task);
+            if (task.keepCasAfterRestore) {
+                await this.archivePendingCasFiles(task, cloud189);
+                folderFiles = await this.getAllFolderFiles(cloud189, task);
+            }
             const existingMediaIndex = this._buildExistingMediaIndex(folderFiles, task);
             const { existingFiles, existingFileNames, existingMediaFiles } = folderFiles.reduce((acc, file) => {
                 if (!file.isFolder) {
@@ -3282,7 +3385,11 @@ class TaskService {
         const cloud189 = Cloud189Service.getInstance(account);
 
         // 1. 获取目标目录物理文件状况
-        const folderFiles = await this.getAllFolderFiles(cloud189, task);
+        let folderFiles = await this.getAllFolderFiles(cloud189, task);
+        if (task.keepCasAfterRestore) {
+            await this.archivePendingCasFiles(task, cloud189);
+            folderFiles = await this.getAllFolderFiles(cloud189, task);
+        }
         const existingMD5s = new Set(
             folderFiles
                 .filter(f => !CasService.isCasFile(f.name))
@@ -3484,4 +3591,4 @@ class TaskService {
     }
 }
 
-module.exports = { TaskService };
+module.exports = { TaskService, buildTaskTargetRelativePath };

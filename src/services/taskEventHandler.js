@@ -12,13 +12,14 @@ class TaskEventHandler {
     }
 
     async handle(taskCompleteEventDto) {
-        if (taskCompleteEventDto.fileList.length === 0) {
+        if (!taskCompleteEventDto.fileList?.length && !taskCompleteEventDto.task?.keepCasAfterRestore) {
             return;
         }
         const task = taskCompleteEventDto.task;
         logTaskEvent(` ${task.resourceName} 触发事件:`);
         try {
             await this._handleAutoRename(taskCompleteEventDto);
+            await this._handleCasArchive(taskCompleteEventDto);
             await this._handleStrmGeneration(taskCompleteEventDto);
             await this._handleAlistCache(taskCompleteEventDto);
             await this._handleMediaScraping(taskCompleteEventDto);
@@ -28,6 +29,18 @@ class TaskEventHandler {
             logTaskEvent(`任务完成后处理失败: ${error.message}`);
         }
         logTaskEvent(`================事件处理完成================`);
+    }
+
+    async _handleCasArchive(eventDto) {
+        const task = eventDto.task;
+        if (!task?.keepCasAfterRestore) {
+            return;
+        }
+        try {
+            await eventDto.taskService.archivePendingCasFiles(task, eventDto.cloud189);
+        } catch (error) {
+            logTaskEvent(`CAS归档失败，等待下次重试: ${error.message}`);
+        }
     }
     async _handleAutoRename(taskCompleteEventDto) {
         try {

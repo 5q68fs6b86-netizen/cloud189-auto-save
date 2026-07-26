@@ -1444,7 +1444,7 @@ const PtTab: React.FC<PtTabProps> = ({ prefill, onPrefillConsumed }) => {
 
             <div className="rounded-2xl border border-slate-200 p-4 space-y-4">
               <div className="flex items-center justify-between">
-                <div className="text-sm font-medium text-slate-800">STRM 文件整理</div>
+                <div className="text-sm font-medium text-slate-800">网盘与 STRM 整理</div>
                 <Checkbox
                   size="sm"
                   checked={settings.strmOrganize.enabled}
@@ -1456,6 +1456,9 @@ const PtTab: React.FC<PtTabProps> = ({ prefill, onPrefillConsumed }) => {
 
               {settings.strmOrganize.enabled && (
                 <>
+                  <p className="text-xs text-slate-500">
+                    上传文件会直接按媒体库目录整理，STRM 复用同一路径；上传生成的 CAS 存根保存到目标目录下的 _cas 镜像目录。
+                  </p>
                   <div className="space-y-2">
                     <label className="text-xs ui-muted">整理模式</label>
                     <select value={settings.strmOrganize.mode}
@@ -1510,7 +1513,7 @@ const PtTab: React.FC<PtTabProps> = ({ prefill, onPrefillConsumed }) => {
 
                   {settings.strmOrganize.mode === 'ai' && (
                     <div className="text-xs ui-muted bg-slate-50 p-3 rounded-xl">
-                      AI 模式需要在系统设置中配置 OpenAI 和 TMDB API Key。整理器会自动识别番剧信息并整理目录结构。
+                      AI 模式需要在系统设置中配置 OpenAI 和 TMDB API Key。上传前只解析一次，网盘与 STRM 共用识别结果和目录结构。
                     </div>
                   )}
                 </>

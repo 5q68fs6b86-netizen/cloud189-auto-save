@@ -37,6 +37,13 @@ const sqliteIndexes = [
 
 const sqliteColumns = [
     { table: 'task', name: 'libraryLayout', sql: 'ALTER TABLE "task" ADD COLUMN "libraryLayout" text' },
+    { table: 'task_processed_file', name: 'transferredCasFileId', sql: 'ALTER TABLE "task_processed_file" ADD COLUMN "transferredCasFileId" text DEFAULT \"\"' },
+    { table: 'task_processed_file', name: 'casSourceFolderId', sql: 'ALTER TABLE "task_processed_file" ADD COLUMN "casSourceFolderId" text DEFAULT \"\"' },
+    { table: 'task_processed_file', name: 'restoredCloudFileId', sql: 'ALTER TABLE "task_processed_file" ADD COLUMN "restoredCloudFileId" text DEFAULT \"\"' },
+    { table: 'task_processed_file', name: 'casArchiveStatus', sql: 'ALTER TABLE "task_processed_file" ADD COLUMN "casArchiveStatus" text DEFAULT \"none\"' },
+    { table: 'task_processed_file', name: 'casArchiveRelativePath', sql: 'ALTER TABLE "task_processed_file" ADD COLUMN "casArchiveRelativePath" text DEFAULT \"\"' },
+    { table: 'task_processed_file', name: 'casArchiveFileId', sql: 'ALTER TABLE "task_processed_file" ADD COLUMN "casArchiveFileId" text DEFAULT \"\"' },
+    { table: 'task_processed_file', name: 'casArchiveError', sql: 'ALTER TABLE "task_processed_file" ADD COLUMN "casArchiveError" text DEFAULT \"\"' },
     { table: 'pt_subscription', name: 'episodeDedup', sql: 'ALTER TABLE "pt_subscription" ADD COLUMN "episodeDedup" boolean NOT NULL DEFAULT 0' },
     { table: 'pt_subscription', name: 'standbyRssJson', sql: 'ALTER TABLE "pt_subscription" ADD COLUMN "standbyRssJson" text DEFAULT \'\'' },
     { table: 'pt_subscription', name: 'coexist', sql: 'ALTER TABLE "pt_subscription" ADD COLUMN "coexist" boolean NOT NULL DEFAULT 0' },

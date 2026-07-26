@@ -189,13 +189,11 @@ class CasService {
 
     async collectFolderCasStubs(cloud189, folderId, options = {}) {
         const mediaOnly = options.mediaOnly !== false;
-        const result = await cloud189.listFiles(folderId || '-11', {
-            recursive: options.recursive !== false,
-            maxPages: options.maxPages || 10
-        });
-
-        const listAO = result?.fileListAO || {};
-        const files = Array.isArray(listAO.fileList) ? listAO.fileList : (Array.isArray(result?.fileList) ? result.fileList : []);
+        const files = await this._collectExportFiles(
+            cloud189,
+            folderId || '-11',
+            options.recursive !== false
+        );
         const exportData = [];
         for (const file of files) {
             const name = file.name || file.fileName || '';
@@ -237,6 +235,22 @@ class CasService {
             }
         }
         return exportData;
+    }
+
+    async _collectExportFiles(cloud189, folderId, recursive) {
+        const result = await cloud189.listFiles(folderId);
+        const listAO = result?.fileListAO || {};
+        const files = [...(listAO.fileList || [])];
+        if (!recursive) {
+            return files;
+        }
+        for (const folder of listAO.folderList || []) {
+            if (String(folder.name || '').trim() === '_cas') {
+                continue;
+            }
+            files.push(...await this._collectExportFiles(cloud189, folder.id || folder.fileId, true));
+        }
+        return files;
     }
 
     // ==================== 删除源文件（Generate后） ====================

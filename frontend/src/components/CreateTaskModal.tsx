@@ -916,9 +916,14 @@ const CreateTaskModal: React.FC<CreateTaskModalProps> = ({ isOpen, onClose, onSu
             <Checkbox
               checked={formData.keepCasAfterRestore}
               onChange={(v) => setFormData(prev => ({ ...prev, keepCasAfterRestore: v }))}
-              label="保留原 CAS 文件"
+              label="归档保留 CAS 存根"
               labelClassName="text-sm font-medium text-slate-600"
             />
+            {formData.keepCasAfterRestore && (
+              <p className="text-[11px] text-slate-500 col-span-full -mt-1">
+                恢复完成后，存根会移动到所选网盘目录下的 _cas 镜像路径，不参与整理、STRM 和集数统计。
+              </p>
+            )}
 
             <Checkbox
               checked={formData.enableCron}

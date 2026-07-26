@@ -15,6 +15,7 @@ const { getDownloader, resetDownloader } = require('./downloader');
 const { PtSourceService } = require('./ptSource');
 const { ptRenameService } = require('./ptRename');
 const { ptTorrentService } = require('./ptTorrent');
+const { CasArchiveService } = require('./casArchiveService');
 const aiService = require('./ai');
 const { TMDBService } = require('./tmdb');
 const {
@@ -45,11 +46,30 @@ const STATUS = {
     UPLOAD_FAILED: 'upload_failed'
 };
 
+function buildPtCollisionCandidates(requestedName, release = {}) {
+    const extension = path.extname(requestedName);
+    const stem = path.basename(requestedName, extension);
+    const subgroup = safeFileName(
+        release.subgroup || ptRenameService.extractSubgroup(release.title || ''),
+        ''
+    );
+    const resolution = safeFileName(
+        release.resolution || ptRenameService.extractResolution(release.title || ''),
+        ''
+    );
+    const variant = [subgroup, resolution].filter(Boolean).join(' ');
+    const suffixes = ['', variant, [variant, `release-${release.id}`].filter(Boolean).join(' ')];
+    return [...new Set(suffixes)].map(suffix =>
+        suffix ? `${stem} [${suffix}]${extension}` : requestedName
+    );
+}
+
 class PtService {
     constructor() {
         this.casService = new CasService();
         this.layoutService = new MediaLibraryLayoutService();
         this.sourceService = new PtSourceService();
+        this.casArchiveService = new CasArchiveService();
         this._processingLock = false;
     }
 
@@ -522,17 +542,21 @@ class PtService {
 
         const cloud189 = Cloud189Service.getInstance(account);
 
-        // 在订阅 targetFolder 下创建 release 子文件夹（按 release 标题）
-        const releaseFolderName = safeFileName(release.title || `release-${release.id}`);
-        const releaseFolderId = await this._ensureSubFolder(cloud189, subscription.targetFolderId, releaseFolderName);
-        release.cloudFolderId = releaseFolderId;
-        release.cloudFolderName = releaseFolderName;
-        await releaseRepo.save(release);
-
         const localFiles = await collectLocalFiles(localPath);
         if (!localFiles.length) {
             throw new Error('本地下载目录为空');
         }
+
+        const uploadPlan = await this._buildPtUploadPlan(subscription, release, localFiles);
+        const releaseRootPath = uploadPlan.rootRelativePath;
+        const releaseFolderId = await this._ensureNestedFolder(
+            cloud189,
+            subscription.targetFolderId,
+            releaseRootPath
+        );
+        release.cloudFolderId = releaseFolderId;
+        release.cloudFolderName = releaseRootPath;
+        await releaseRepo.save(release);
 
         const manifest = [];
         const enableFamilyTransit = !!ConfigService.getConfigValue('cas.enableFamilyTransit', true);
@@ -540,33 +564,66 @@ class PtService {
         const totalFiles = localFiles.length;
         let uploadedFiles = 0;
 
-        for (const file of localFiles) {
-            const subDirId = await this._ensureNestedFolder(cloud189, releaseFolderId, file.relativeDir);
+        for (const planned of uploadPlan.files) {
+            const file = planned.source;
+            const cloudDir = path.posix.dirname(planned.cloudRelativePath);
+            const subDirId = await this._ensureNestedFolder(
+                cloud189,
+                subscription.targetFolderId,
+                cloudDir === '.' ? '' : cloudDir
+            );
             logTaskEvent(`[PT] 哈希中: ${file.relativePath} (${(file.size / 1024 / 1024).toFixed(2)}MB)`);
             const hashes = await computeFileHashes(file.fullPath);
+            const destination = await this._resolvePtUploadDestination(
+                cloud189,
+                subDirId,
+                planned.fileName,
+                hashes,
+                release
+            );
             const casInfo = {
-                name: file.name,
+                name: destination.fileName,
                 size: hashes.size,
                 md5: hashes.md5,
                 sliceMd5: hashes.sliceMd5
             };
 
-            const uploadResult = await this._rapidUploadWithFallback(cloud189, subDirId, casInfo, file.name, file.fullPath, enableFamilyTransit, familyTransitFirst);
-            // 同目录写 .cas stub
-            const casContent = CasService.generateCasContent(casInfo, 'base64');
-            const casFileName = file.name.toLowerCase().endsWith('.cas') ? file.name : `${file.name}.cas`;
-            try {
-                await this.casService.uploadTextFile(cloud189, subDirId, casFileName, casContent, { overwrite: true });
-            } catch (err) {
-                logTaskEvent(`[PT] 写 .cas 失败（不影响整体）: ${casFileName} ${err.message || err}`);
-            }
+            const uploadResult = destination.existing
+                ? { fileId: destination.fileId, via: 'existing' }
+                : await this._rapidUploadWithFallback(
+                    cloud189,
+                    subDirId,
+                    casInfo,
+                    destination.fileName,
+                    file.fullPath,
+                    enableFamilyTransit,
+                    familyTransitFirst
+                );
+            const cloudRelativePath = path.posix.join(
+                cloudDir === '.' ? '' : cloudDir,
+                destination.fileName
+            );
+            const casResult = await this.casArchiveService.uploadStub(
+                cloud189,
+                subscription.targetFolderId,
+                cloudRelativePath,
+                casInfo,
+                { casService: this.casService, overwrite: true }
+            );
 
             manifest.push({
                 relativePath: file.relativePath,
+                sourceRelativePath: file.relativePath,
+                cloudRelativePath,
+                cloudFileName: destination.fileName,
+                isMedia: planned.isMedia,
+                organized: uploadPlan.organizeEnabled,
                 size: file.size,
                 md5: hashes.md5,
                 sliceMd5: hashes.sliceMd5,
                 cloudFileId: uploadResult.fileId,
+                casFileId: casResult.fileId || '',
+                casRelativePath: casResult.relativePath || '',
                 via: uploadResult.via
             });
             uploadedFiles++;
@@ -596,7 +653,7 @@ class PtService {
             for (const entry of manifest) {
                 if (entry.cloudFileId) {
                     try {
-                        await this.casService.deleteSourceFileAfterGenerate(cloud189, entry.cloudFileId, entry.relativePath, isFamily);
+                        await this.casService.deleteSourceFileAfterGenerate(cloud189, entry.cloudFileId, entry.cloudRelativePath || entry.relativePath, isFamily);
                     } catch (delErr) {
                         logTaskEvent(`[PT] 删除网盘源文件失败: ${entry.relativePath} ${delErr.message || delErr}`);
                     }
@@ -633,6 +690,156 @@ class PtService {
                 logTaskEvent(`[PT] 删除本地源文件失败（不影响整体）: ${delErr.message || delErr}`);
             }
         }
+    }
+
+    async _buildPtUploadPlan(subscription, release, localFiles) {
+        const config = ConfigService.getConfigValue('pt.strmOrganize', {});
+        const organizeEnabled = !!config.enabled && ['regex', 'ai'].includes(config.mode);
+        const mediaSuffixes = new Set(
+            String(ConfigService.getConfigValue('task.mediaSuffix', '') || '')
+                .split(';')
+                .map(value => value.trim().toLowerCase())
+                .filter(value => value && value !== '.cas')
+        );
+        const isMedia = file => mediaSuffixes.has(path.extname(file.name || '').toLowerCase());
+        const mediaFiles = localFiles.filter(isMedia);
+        const releaseFolderName = safeFileName(release.title || `release-${release.id}`);
+
+        if (!organizeEnabled || !mediaFiles.length) {
+            return {
+                organizeEnabled: false,
+                rootRelativePath: releaseFolderName,
+                files: localFiles.map(file => ({
+                    source: file,
+                    isMedia: isMedia(file),
+                    fileName: file.name,
+                    cloudRelativePath: path.posix.join(releaseFolderName, file.relativePath)
+                }))
+            };
+        }
+
+        let aiBase = null;
+        let aiEpisodeMap = new Map();
+        let libraryInfo = null;
+        if (config.mode === 'ai') {
+            try {
+                if (!aiService.isEnabled()) {
+                    throw new Error('AI 服务未启用');
+                }
+                const filesForAi = mediaFiles.map(file => ({ id: file.relativePath, name: file.name }));
+                const response = await aiService.simpleChatCompletion(
+                    release.title || subscription.name || `release-${release.id}`,
+                    filesForAi
+                );
+                if (!response.success) {
+                    throw new Error(response.error || 'AI 解析失败');
+                }
+                const data = response.data || {};
+                aiBase = {
+                    name: data.name || this._extractRegexSeriesTitle(subscription, release),
+                    year: Number(data.year) || 0,
+                    type: data.type === 'movie' ? 'movie' : 'tv',
+                    season: data.season || ''
+                };
+                aiEpisodeMap = new Map(
+                    (Array.isArray(data.episode) ? data.episode : []).map(item => [String(item.id), item])
+                );
+                libraryInfo = await this._resolveLibraryInfoByTmdb(aiBase);
+                logTaskEvent(`[PT] AI 网盘整理: ${libraryInfo.categoryName}/${libraryInfo.resourceFolderName}`);
+            } catch (error) {
+                logTaskEvent(`[PT] AI 整理失败，降级正则: ${error.message || error}`);
+            }
+        }
+        if (!libraryInfo) {
+            const title = this._extractRegexSeriesTitle(subscription, release)
+                || subscription.name
+                || release.title;
+            libraryInfo = await this._resolveLibraryInfoByTmdb({ name: title, year: 0, type: 'tv' });
+        }
+
+        const category = safeFileName(libraryInfo.categoryName || config.categoryFolder || '动漫');
+        const resource = safeFileName(libraryInfo.resourceFolderName || subscription.name || releaseFolderName);
+        const rootRelativePath = path.posix.join(category, resource);
+        const plannedFiles = localFiles.map(file => {
+            if (!isMedia(file)) {
+                return {
+                    source: file,
+                    isMedia: false,
+                    fileName: file.name,
+                    cloudRelativePath: path.posix.join(rootRelativePath, file.relativePath)
+                };
+            }
+            const input = { ...file, id: file.relativePath, originalFileName: file.name };
+            const organized = aiBase
+                ? ptRenameService.organizePathByAi(
+                    subscription,
+                    release,
+                    input,
+                    config,
+                    aiBase,
+                    aiEpisodeMap.get(String(file.relativePath)) || null,
+                    libraryInfo.categoryName,
+                    libraryInfo
+                )
+                : ptRenameService.organizePath(subscription, release, input, config, libraryInfo);
+            const dirParts = String(organized.dirName || '').replace(/\\/g, '/').split('/').filter(Boolean);
+            const relativeDir = dirParts.slice(2).join('/');
+            const extension = path.extname(file.name || '');
+            const baseName = String(organized.fileName || '').replace(/\.strm$/i, '')
+                || path.basename(file.name, extension);
+            const fileName = `${safeFileName(baseName)}${extension}`;
+            return {
+                source: file,
+                isMedia: true,
+                fileName,
+                cloudRelativePath: path.posix.join(rootRelativePath, relativeDir, fileName)
+            };
+        });
+        return { organizeEnabled: true, rootRelativePath, files: plannedFiles, libraryInfo };
+    }
+
+    async _resolvePtUploadDestination(cloud189, folderId, requestedName, hashes, release) {
+        const listing = await cloud189.listFiles(folderId);
+        const files = listing?.fileListAO?.fileList || [];
+        const extension = path.extname(requestedName);
+        const stem = path.basename(requestedName, extension);
+
+        for (const fileName of buildPtCollisionCandidates(requestedName, release)) {
+            const existing = files.find(file => file.name === fileName);
+            if (!existing) {
+                return { fileName, existing: false, fileId: '' };
+            }
+            if (await this._isSamePtCloudFile(cloud189, existing, hashes)) {
+                return { fileName, existing: true, fileId: String(existing.id || existing.fileId) };
+            }
+        }
+
+        let sequence = 2;
+        while (sequence < 1000) {
+            const fileName = `${stem} [release-${release.id}-${sequence}]${extension}`;
+            const existing = files.find(file => file.name === fileName);
+            if (!existing) {
+                return { fileName, existing: false, fileId: '' };
+            }
+            if (await this._isSamePtCloudFile(cloud189, existing, hashes)) {
+                return { fileName, existing: true, fileId: String(existing.id || existing.fileId) };
+            }
+            sequence++;
+        }
+        throw new Error(`无法为同名文件生成可用版本名: ${requestedName}`);
+    }
+
+    async _isSamePtCloudFile(cloud189, file, hashes) {
+        let size = Number(file.size || file.fileSize || 0);
+        let md5 = String(file.md5 || file.fileMd5 || '').toUpperCase();
+        if (!md5 || !size) {
+            const detail = await cloud189.getFileInfo(file.id || file.fileId).catch(() => null);
+            size = size || Number(detail?.size || detail?.fileSize || 0);
+            md5 = md5 || String(detail?.md5 || detail?.fileMd5 || '').toUpperCase();
+        }
+        return size === Number(hashes.size)
+            && !!md5
+            && md5 === String(hashes.md5 || '').toUpperCase();
     }
 
     async _resolveReleaseLocalPath(release) {
@@ -766,118 +973,23 @@ class PtService {
 
         const strmService = new StrmService();
         const streamProxyService = new StreamProxyService();
-        const strmOrganize = ConfigService.getConfigValue('pt.strmOrganize', {});
-        const allowedModes = ['regex', 'ai'];
-        const organizeEnabled = !!(strmOrganize.enabled && allowedModes.includes(strmOrganize.mode));
-
-        // AI 模式：先把 manifest 整体丢给 AI 拿结构化结果
-        let aiBaseInfo = null;
-        let aiEpisodeMap = null;
-        let aiLibraryInfo = null;
-        let regexLibraryInfo = null;
-        if (organizeEnabled && strmOrganize.mode === 'ai') {
-            try {
-                if (!aiService.isEnabled()) {
-                    throw new Error('AI 服务未启用，请先在系统设置开启 OpenAI');
-                }
-                const filesForAi = manifest
-                    .filter(m => m.cloudFileId)
-                    .map(m => ({
-                        id: String(m.cloudFileId),
-                        name: path.basename(m.relativePath)
-                    }));
-                if (!filesForAi.length) {
-                    throw new Error('manifest 中没有可分析的文件');
-                }
-                const resourcePath = release.title || subscription.name || `release-${release.id}`;
-                logTaskEvent(`[PT] AI 整理：开始解析 ${filesForAi.length} 个文件 (${resourcePath})`);
-                const resp = await aiService.simpleChatCompletion(resourcePath, filesForAi);
-                if (!resp.success) {
-                    throw new Error(resp.error || 'AI 解析失败');
-                }
-                const data = resp.data || {};
-                aiBaseInfo = {
-                    name: data.name,
-                    year: Number(data.year) || 0,
-                    type: data.type || 'tv',
-                    season: data.season || ''
-                };
-                aiEpisodeMap = new Map(
-                    (Array.isArray(data.episode) ? data.episode : []).map(ep => [String(ep.id), ep])
-                );
-                logTaskEvent(`[PT] AI 整理：解析成功 -> ${aiBaseInfo.name}${aiBaseInfo.year ? ' (' + aiBaseInfo.year + ')' : ''} type=${aiBaseInfo.type} season=${aiBaseInfo.season || '?'} 集数=${aiEpisodeMap.size}`);
-
-                // 接 TMDB 查标准媒体库目录，复用非 PT 整理器规则
-                aiLibraryInfo = await this._resolveLibraryInfoByTmdb(aiBaseInfo);
-                if (aiLibraryInfo) {
-                    logTaskEvent(`[PT] AI 整理：媒体库目录 -> ${aiLibraryInfo.categoryName}/${aiLibraryInfo.resourceFolderName}`);
-                }
-            } catch (err) {
-                logTaskEvent(`[PT] AI 整理失败，降级到正则模式: ${err.message || err}`);
-                aiBaseInfo = null;
-                aiEpisodeMap = null;
-                aiLibraryInfo = null;
-            }
-        }
-        if (organizeEnabled && strmOrganize.mode === 'regex') {
-            try {
-                const seriesTitle = this._extractRegexSeriesTitle(subscription, release);
-                if (seriesTitle) {
-                    regexLibraryInfo = await this._resolveLibraryInfoByTmdb({
-                        name: seriesTitle,
-                        year: 0,
-                        type: 'tv'
-                    });
-                    if (regexLibraryInfo) {
-                        logTaskEvent(`[PT] 正则整理：媒体库目录 -> ${regexLibraryInfo.categoryName}/${regexLibraryInfo.resourceFolderName}`);
-                    }
-                }
-            } catch (err) {
-                logTaskEvent(`[PT] 正则整理媒体库目录解析失败，回退订阅名目录: ${err.message || err}`);
-                regexLibraryInfo = null;
-            }
-        }
-
-        // 从 manifest 构建文件列表，供 generateCustom 使用
+        const organizeEnabled = manifest.some(entry => entry.organized === true);
         const files = manifest
-            .filter(m => m.cloudFileId)
+            .filter(m => m.cloudFileId && m.isMedia !== false)
             .map(m => {
-                const originalFileName = path.basename(m.relativePath);
-                const file = {
+                const originalFileName = m.cloudFileName || path.basename(m.cloudRelativePath || m.relativePath);
+                return {
                     name: originalFileName,
-                    relativeDir: path.dirname(m.relativePath) || '',
+                    relativeDir: path.posix.dirname(m.cloudRelativePath || m.relativePath) === '.'
+                        ? ''
+                        : path.posix.dirname(m.cloudRelativePath || m.relativePath),
                     id: m.cloudFileId,
-                    originalFileName
+                    originalFileName,
+                    sourceFileName: m.cloudFileName || originalFileName,
+                    sourceRelativeDir: path.posix.dirname(m.cloudRelativePath || m.relativePath) === '.'
+                        ? ''
+                        : path.posix.dirname(m.cloudRelativePath || m.relativePath)
                 };
-
-                if (organizeEnabled) {
-                    let organized;
-                    if (aiBaseInfo) {
-                        const aiEp = aiEpisodeMap?.get(String(m.cloudFileId)) || null;
-                        organized = ptRenameService.organizePathByAi(
-                            subscription,
-                            release,
-                            file,
-                            strmOrganize,
-                            aiBaseInfo,
-                            aiEp,
-                            aiLibraryInfo?.categoryName || null,
-                            aiLibraryInfo
-                        );
-                    } else {
-                        organized = ptRenameService.organizePath(
-                            subscription,
-                            release,
-                            file,
-                            strmOrganize,
-                            regexLibraryInfo
-                        );
-                    }
-                    file.organizedDir = organized.dirName;
-                    file.organizedFileName = organized.fileName;
-                }
-
-                return file;
             });
 
         if (!files.length) {
@@ -891,30 +1003,27 @@ class PtService {
         // 确定目标根目录（剥裸 strm 前缀，避免 strm/strm）
         let targetRoot;
         if (organizeEnabled) {
-            // 优先媒体库 layout：{normalizedPrefix}/{分类}/{作品}
-            // organizedDir 可能是 category/title/season，取前两段作 root，季放 relative
-            const firstOrg = String(files[0].organizedDir || '').replace(/\\/g, '/');
-            const parts = firstOrg.split('/').filter(Boolean);
-            if (parts.length >= 2) {
-                targetRoot = joinLocalStrmPath(account.localStrmPrefix, parts[0], parts[1]);
-                // 把 season 等剩余段写回 relativeDir，避免重复嵌套
-                const rest = parts.slice(2).join('/');
-                for (const f of files) {
-                    const od = String(f.organizedDir || '').replace(/\\/g, '/').split('/').filter(Boolean);
-                    if (od.length >= 2) {
-                        f.relativeDir = od.slice(2).join('/');
-                    } else if (rest) {
-                        f.relativeDir = rest;
-                    }
-                }
-            } else {
-                targetRoot = joinLocalStrmPath(account.localStrmPrefix, files[0].organizedDir || '');
+            const firstParts = String(files[0].relativeDir || '').split('/').filter(Boolean);
+            targetRoot = joinLocalStrmPath(account.localStrmPrefix, ...firstParts.slice(0, 2));
+            for (const file of files) {
+                const parts = String(file.relativeDir || '').split('/').filter(Boolean);
+                file.relativeDir = parts.slice(2).join('/');
             }
         } else {
             // 原始模式：使用 {normalizedPrefix}/PT/{subName}/{relName}
             const subName = safeFileName(subscription.name || `sub-${subscription.id}`);
             const relName = safeFileName(release.title || `release-${release.id}`);
             targetRoot = joinLocalStrmPath(account.localStrmPrefix, 'PT', subName, relName);
+            const releaseFolderName = String(release.cloudFolderName || relName).replace(/\\/g, '/');
+            for (const file of files) {
+                if (file.relativeDir === releaseFolderName) {
+                    file.relativeDir = '';
+                    continue;
+                }
+                if (file.relativeDir.startsWith(`${releaseFolderName}/`)) {
+                    file.relativeDir = file.relativeDir.slice(releaseFolderName.length + 1);
+                }
+            }
         }
 
         await strmService.generateCustom(
@@ -933,7 +1042,7 @@ class PtService {
             }),
             false,
             false,
-            organizeEnabled ? 'organized' : 'default'  // 传递重命名模式
+            'default'
         );
 
         logTaskEvent(`[PT] STRM 生成完成: ${targetRoot} (共 ${files.length} 个文件)`);
@@ -1162,4 +1271,4 @@ class PtService {
 }
 
 const ptService = new PtService();
-module.exports = { PtService, ptService, PT_STATUS: STATUS };
+module.exports = { PtService, ptService, PT_STATUS: STATUS, buildPtCollisionCandidates };

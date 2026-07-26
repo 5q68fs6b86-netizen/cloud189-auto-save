@@ -54,7 +54,7 @@ class ConfigService {
         autoDeleteSource: true,        // 生成 .cas 后自动删除本地源文件
         enableStrm: true,              // 上传完成后自动生成 STRM 文件
         strmOrganize: {
-          enabled: false,              // 是否启用 STRM 整理
+          enabled: false,              // 是否启用网盘与 STRM 整理
           mode: 'regex',               // 整理模式：'regex'（正则）| 'ai'（AI+TMDB）
           categoryFolder: '动漫',      // 分类目录名
           fileTemplate: '{title} S{season}E{episode}',  // 文件名模板
