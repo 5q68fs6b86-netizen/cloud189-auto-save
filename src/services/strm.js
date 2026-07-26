@@ -8,6 +8,7 @@ const { StreamProxyService } = require('./streamProxy');
 const { Cloud189Service } = require('./cloud189');
 
 const { CasService } = require('./casService');
+const { CasArchiveService } = require('./casArchiveService');
 const {
     MediaLibraryLayoutService,
     normalizeRelativePath,
@@ -77,7 +78,9 @@ class StrmService {
                 taskName = '';
             }
             const targetDir = this._resolveBasePath(taskRoot);
-            const mediaFiles = files.filter(file => this._checkFileSuffix(file, mediaSuffixs));
+            const mediaFiles = files
+                .filter(file => !CasArchiveService.isArchivePath(file.relativePath || file.relativeDir || ''))
+                .filter(file => this._checkFileSuffix(file, mediaSuffixs));
             const expectedStrmPaths = new Set(
                 mediaFiles.map(file => this._buildRelativeStrmPath(file.relativeDir || '', file.name))
             );
@@ -93,7 +96,8 @@ class StrmService {
             await this._ensureDirectoryExists(targetDir);
             for (const file of files) {
                 // 检查文件是否是媒体文件
-                if (!this._checkFileSuffix(file, mediaSuffixs)) {
+                if (CasArchiveService.isArchivePath(file.relativePath || file.relativeDir || '')
+                    || !this._checkFileSuffix(file, mediaSuffixs)) {
                     // logTaskEvent(`文件不是媒体文件，跳过: ${file.name}`);
                     skipped++
                     continue;
@@ -267,7 +271,9 @@ class StrmService {
         let failed = 0;
         let skipped = 0;
 
-        const mediaFiles = files.filter(file => this._checkFileSuffix(file, mediaSuffixs));
+        const mediaFiles = files
+            .filter(file => !CasArchiveService.isArchivePath(file.relativePath || file.relativeDir || ''))
+            .filter(file => this._checkFileSuffix(file, mediaSuffixs));
         const expectedStrmPaths = new Set(
             mediaFiles.map(file => {
                 if (renameMode === 'organized' && file.organizedFileName) {
@@ -300,7 +306,8 @@ class StrmService {
         await this._ensureDirectoryExists(targetDir);
 
         for (const file of files) {
-            if (!this._checkFileSuffix(file, mediaSuffixs)) {
+            if (CasArchiveService.isArchivePath(file.relativePath || file.relativeDir || '')
+                || !this._checkFileSuffix(file, mediaSuffixs)) {
                 skipped++;
                 continue;
             }
@@ -489,6 +496,9 @@ class StrmService {
             if (!id) {
                 continue;
             }
+            if (CasArchiveService.isReservedDirectory(name)) {
+                continue;
+            }
             if (excludeRegex && excludeRegex.test(name)) {
                 continue;
             }
@@ -669,6 +679,10 @@ class StrmService {
                     continue;
                 }
                 if (file.is_dir) {
+                    if (CasArchiveService.isReservedDirectory(file.name)) {
+                        stats.skipped++;
+                        continue;
+                    }
                     const nextSourcePath = this._normalizeRelativePath(path.join(sourcePath, file.name));
                     const nextTargetRoot = this._normalizeRelativePath(path.join(targetRelativeRoot, file.name));
                     const nextContentRoot = this._normalizeRelativePath(path.join(relativeContentRoot, file.name));

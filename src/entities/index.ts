@@ -345,6 +345,27 @@ export class TaskProcessedFile {
     @Column('text', { nullable: true })
     restoredFileName!: string;
 
+    @Column('text', { nullable: true, default: '' })
+    transferredCasFileId!: string;
+
+    @Column('text', { nullable: true, default: '' })
+    casSourceFolderId!: string;
+
+    @Column('text', { nullable: true, default: '' })
+    restoredCloudFileId!: string;
+
+    @Column('text', { nullable: true, default: 'none' })
+    casArchiveStatus!: string;
+
+    @Column('text', { nullable: true, default: '' })
+    casArchiveRelativePath!: string;
+
+    @Column('text', { nullable: true, default: '' })
+    casArchiveFileId!: string;
+
+    @Column('text', { nullable: true, default: '' })
+    casArchiveError!: string;
+
     @Column('text', { default: 'processing' })
     status!: string;
 

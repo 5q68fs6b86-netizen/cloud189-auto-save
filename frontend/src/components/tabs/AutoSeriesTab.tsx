@@ -295,8 +295,8 @@ const AutoSeriesTab: React.FC = () => {
                 align="start"
                 checked={form.keepCasAfterRestore}
                 onChange={(v) => setForm({ ...form, keepCasAfterRestore: v })}
-                label={<span className="text-sm font-medium text-slate-800">保留原 CAS 文件</span>}
-                description="开启后，任务秒传恢复成功会保留网盘中的 .cas 文件；关闭则保持恢复后自动删除。"
+                label={<span className="text-sm font-medium text-slate-800">归档保留 CAS 存根</span>}
+                description="开启后，恢复成功的 .cas 会移动到所选网盘目录下的 _cas 镜像路径；关闭则恢复后自动删除。"
               />
             </div>
 

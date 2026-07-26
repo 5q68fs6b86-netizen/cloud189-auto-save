@@ -5,6 +5,8 @@ const { StrmService } = require('./strm');
 const { TMDBService } = require('./tmdb');
 const { logTaskEvent } = require('../utils/logUtils');
 const { MediaLibraryLayoutService, normalizeRelativePath } = require('./mediaLibraryLayout');
+const { CasService } = require('./casService');
+const { CasArchiveService } = require('./casArchiveService');
 
 class OrganizerService {
     constructor(taskService, taskRepo = null) {
@@ -53,7 +55,10 @@ class OrganizerService {
             logTaskEvent(`任务[${task.resourceName}]为懒STRM，仅锁定媒体库布局（不移动网盘文件）`);
         }
 
-        const allFiles = (await this.taskService.getFilesByTask(task)).filter(file => !file.isFolder);
+        const allFiles = (await this.taskService.getFilesByTask(task))
+            .filter(file => !file.isFolder)
+            .filter(file => !CasService.isCasFile(file.name))
+            .filter(file => !CasArchiveService.isArchivePath(file.relativePath || file.relativeDir || ''));
         if (!allFiles.length) {
             throw new Error('当前任务目录没有可整理的文件');
         }
@@ -255,6 +260,9 @@ class OrganizerService {
         if (!normalizedItems.length) {
             throw new Error('未选择需要整理的文件');
         }
+        if (normalizedItems.some(item => CasArchiveService.isReservedDirectory(item.name))) {
+            throw new Error('_cas 是系统保留目录，不能执行媒体整理');
+        }
 
         const cloud189 = Cloud189Service.getInstance(account);
         this.layoutService.taskService = this.taskService;
@@ -283,7 +291,10 @@ class OrganizerService {
                     }];
 
                 const files = (rawFiles || []).filter((file) => file && !file.isFolder && file.id && file.name);
-                if (!files.length) {
+                const mediaFiles = files
+                    .filter(file => !CasService.isCasFile(file.name))
+                    .filter(file => !CasArchiveService.isArchivePath(file.relativePath || file.relativeDir || ''));
+                if (!mediaFiles.length) {
                     results.push({
                         item,
                         skipped: true,
@@ -295,11 +306,11 @@ class OrganizerService {
                 const resourceName = item.isFolder
                     ? item.name
                     : path.parse(item.name).name;
-                logTaskEvent(`[文件整理] 开始: ${item.name}（${files.length} 文件）`);
+                logTaskEvent(`[文件整理] 开始: ${item.name}（${mediaFiles.length} 文件）`);
 
                 const libraryInfo = await this.layoutService.resolveLibraryInfo({
                     resourceName,
-                    files: files.map((file) => ({ id: file.id, name: file.name })),
+                    files: mediaFiles.map((file) => ({ id: file.id, name: file.name })),
                     useAi: !!useAi,
                     forceRefresh: !!forceRefresh
                 });
@@ -332,7 +343,7 @@ class OrganizerService {
                 let movedCount = 0;
                 const operations = [];
 
-                for (const file of files) {
+                for (const file of mediaFiles) {
                     const aiFile = fileMap.get(String(file.id));
                     const targetFileName = this.layoutService.buildFileName(
                         file,
