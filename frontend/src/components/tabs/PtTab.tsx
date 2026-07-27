@@ -9,6 +9,7 @@ import { useDialog } from '../ui/Dialog';
 
 interface SearchResult { id: string; title: string; cover: string; url: string; source: string; directRss?: boolean; preview?: string[]; groups?: GroupResult[]; }
 interface GroupResult { name: string; rssUrl: string; itemCount?: number; source: string; }
+interface FeedPreviewItem { title: string; rawTitle?: string; subgroup?: string; episodeLabel?: string; seasonNumber?: number; resolution?: string; quality?: string; size?: number; volumeFactor?: string; }
 
 interface Account { id: number; username: string; alias?: string; }
 interface SourcePreset { key: string; label: string; description: string; defaultRssUrl: string; }
@@ -105,6 +106,7 @@ interface StrmOrganizeSettings {
 }
 
 interface PtSettings {
+  mikanBaseUrl: string;
   downloadRoot: string;
   pollCron: string;
   globalExcludePattern: string;
@@ -258,6 +260,13 @@ const PtTab: React.FC<PtTabProps> = ({ prefill, onPrefillConsumed }) => {
   const [isSaving, setIsSaving] = useState(false);
   const [isDeduping, setIsDeduping] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [showSourceDetails, setShowSourceDetails] = useState(false);
+  const [feedPreviewItems, setFeedPreviewItems] = useState<FeedPreviewItem[]>([]);
+  const [feedPreviewLoading, setFeedPreviewLoading] = useState(false);
+  const [feedPreviewError, setFeedPreviewError] = useState('');
+  const [aiRequirement, setAiRequirement] = useState('');
+  const [aiGenerating, setAiGenerating] = useState(false);
+  const [aiExplanation, setAiExplanation] = useState('');
 
   const [folderSelectorOpen, setFolderSelectorOpen] = useState(false);
 
@@ -272,6 +281,8 @@ const PtTab: React.FC<PtTabProps> = ({ prefill, onPrefillConsumed }) => {
   const [proxyServices, setProxyServices] = useState<Record<string, boolean>>({});
   const [testStatus, setTestStatus] = useState<{ ok: boolean; message: string } | null>(null);
   const [testing, setTesting] = useState(false);
+  const [testingMikan, setTestingMikan] = useState(false);
+  const [mikanTestStatus, setMikanTestStatus] = useState<{ ok: boolean; message: string } | null>(null);
 
   // 搜索状态
   const [isSearchOpen, setIsSearchOpen] = useState(false);
@@ -321,6 +332,7 @@ const PtTab: React.FC<PtTabProps> = ({ prefill, onPrefillConsumed }) => {
       const svc = d.data?.proxy?.services || {};
       const strmOrg = pt.strmOrganize || {};
       setSettings({
+        mikanBaseUrl: pt.mikanBaseUrl || 'https://mikanani.kas.pub',
         downloadRoot: pt.downloadRoot || '',
         pollCron: pt.pollCron || '*/15 * * * *',
         globalExcludePattern: pt.globalExcludePattern || '',
@@ -387,6 +399,7 @@ const PtTab: React.FC<PtTabProps> = ({ prefill, onPrefillConsumed }) => {
       targetFolder: lastDir?.targetFolder || '',
     });
     setShowAdvanced(false);
+    setShowSourceDetails(false);
     setIsModalOpen(true);
     prefillAppliedRef.current = prefill;
     // 等弹窗状态提交后再清理父级 prefill，避免重复触发
@@ -417,6 +430,11 @@ const PtTab: React.FC<PtTabProps> = ({ prefill, onPrefillConsumed }) => {
       targetFolder: lastDir?.targetFolder || '',
     });
     setShowAdvanced(false);
+    setShowSourceDetails(true);
+    setFeedPreviewItems([]);
+    setFeedPreviewError('');
+    setAiRequirement('');
+    setAiExplanation('');
     setIsModalOpen(true);
   };
 
@@ -463,6 +481,7 @@ const PtTab: React.FC<PtTabProps> = ({ prefill, onPrefillConsumed }) => {
         || sub.notDownloadEpisodes || sub.skipHalfEpisode || sub.customEpisode || sub.episodeOffset
         || sub.omit || sub.totalEpisodeNumber || sub.autoDisabled || !globalExclude)
     );
+    setShowSourceDetails(true);
     setIsModalOpen(true);
   };
 
@@ -706,6 +725,27 @@ const PtTab: React.FC<PtTabProps> = ({ prefill, onPrefillConsumed }) => {
     }
   };
 
+  const handleTestMikan = async () => {
+    if (!settings?.mikanBaseUrl.trim()) return;
+    setTestingMikan(true);
+    setMikanTestStatus(null);
+    try {
+      const r = await fetch('/api/pt/sources/mikan/test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ baseUrl: settings.mikanBaseUrl })
+      });
+      const d = await r.json();
+      setMikanTestStatus(d.success
+        ? { ok: true, message: `连接成功，耗时 ${d.data?.elapsedMs ?? 0} ms` }
+        : { ok: false, message: d.error || '连接失败' });
+    } catch {
+      setMikanTestStatus({ ok: false, message: '连接失败' });
+    } finally {
+      setTestingMikan(false);
+    }
+  };
+
   const handleSearch = async () => {
     if (!searchKeyword.trim()) return;
     setSearchLoading(true);
@@ -751,6 +791,12 @@ const PtTab: React.FC<PtTabProps> = ({ prefill, onPrefillConsumed }) => {
       return;
     }
 
+    if (anime.groups && anime.groups.length > 0) {
+      setSearchGroups(anime.groups);
+      setSearchStep('groups');
+      return;
+    }
+
     setSearchLoading(true);
     setSearchGroups([]);
     setSearchStep('groups');
@@ -784,6 +830,81 @@ const PtTab: React.FC<PtTabProps> = ({ prefill, onPrefillConsumed }) => {
     setSearchStep('search');
   };
 
+  const loadFeedPreview = async (rssUrl = formData.rssUrl, sourcePreset = formData.sourcePreset) => {
+    if (!rssUrl.trim()) {
+      toast.warning('请先填写 RSS URL');
+      return;
+    }
+    setFeedPreviewLoading(true);
+    setFeedPreviewError('');
+    try {
+      const r = await fetch(`/api/pt/sources/group-items?rssUrl=${encodeURIComponent(rssUrl)}&preset=${encodeURIComponent(sourcePreset)}`);
+      const text = await r.text();
+      let d: any;
+      try { d = JSON.parse(text); } catch { throw new Error(`服务器返回非 JSON: ${text.slice(0, 120)}`); }
+      if (!d.success) throw new Error(d.error || 'RSS 拉取失败');
+      setFeedPreviewItems(Array.isArray(d.data) ? d.data : []);
+    } catch (error: any) {
+      setFeedPreviewItems([]);
+      setFeedPreviewError(error.message || 'RSS 拉取失败');
+    } finally {
+      setFeedPreviewLoading(false);
+    }
+  };
+
+  const generateFilterPatterns = async () => {
+    if (!feedPreviewItems.length) {
+      toast.warning('请先加载文件列表，再让 AI 根据真实标题生成正则');
+      return;
+    }
+    setAiGenerating(true);
+    setAiExplanation('');
+    try {
+      const r = await fetch('/api/pt/sources/generate-filter-patterns', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: formData.name,
+          requirement: aiRequirement,
+          titles: feedPreviewItems.map(item => item.rawTitle || item.title)
+        })
+      });
+      const d = await r.json();
+      if (!d.success) throw new Error(d.error || 'AI 生成失败');
+      setFormData(current => ({
+        ...current,
+        includePattern: d.data?.includePattern || '',
+        excludePattern: d.data?.excludePattern || ''
+      }));
+      setAiExplanation(d.data?.explanation || '正则已生成，可直接查看下方匹配预览。');
+    } catch (error: any) {
+      toast.error(error.message || 'AI 生成失败');
+    } finally {
+      setAiGenerating(false);
+    }
+  };
+
+  const previewMatch = (item: FeedPreviewItem) => {
+    const title = String(item.rawTitle || item.title || '');
+    try {
+      const included = !formData.includePattern.trim() || new RegExp(formData.includePattern, 'i').test(title);
+      const excluded = !!formData.excludePattern.trim() && new RegExp(formData.excludePattern, 'i').test(title);
+      return included && !excluded;
+    } catch {
+      return false;
+    }
+  };
+
+  const invalidPattern = (() => {
+    try {
+      if (formData.includePattern.trim()) new RegExp(formData.includePattern, 'i');
+      if (formData.excludePattern.trim()) new RegExp(formData.excludePattern, 'i');
+      return '';
+    } catch (error: any) {
+      return error.message || '正则格式无效';
+    }
+  })();
+
   const handlePreviewGroup = async (idx: number, group: GroupResult) => {
     if (previewGroupIdx === idx) { setPreviewGroupIdx(null); return; }
     setPreviewGroupIdx(idx);
@@ -807,27 +928,30 @@ const PtTab: React.FC<PtTabProps> = ({ prefill, onPrefillConsumed }) => {
       name: data.name,
       rssUrl: data.rssUrl,
       sourcePreset: data.sourcePreset,
+      includePattern: data.includePattern || '',
       accountId: lastDir?.accountId || accounts[0]?.id || 0,
       targetFolderId: lastDir?.targetFolderId || '',
       targetFolder: lastDir?.targetFolder || '',
     });
     setShowAdvanced(false);
+    setShowSourceDetails(false);
     setIsModalOpen(true);
+    void loadFeedPreview(data.rssUrl, data.sourcePreset);
   };
 
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
-        <div className="flex gap-2">
-          <button onClick={openAdd} className="bg-[#0b57d0] text-white px-6 py-2.5 rounded-full text-sm font-medium hover:bg-[#0b57d0]/90 transition-all shadow-sm flex items-center gap-2">
-            <Plus size={18} /> 添加 PT 订阅
-          </button>
+        <div className="flex flex-wrap gap-2">
           <button
             type="button"
             onClick={() => setIsExternalSearchOpen(true)}
-            className="bg-white border border-slate-300 text-slate-700 px-5 py-2.5 rounded-full text-sm font-medium hover:bg-slate-50 flex items-center gap-2 transition-colors"
+            className="bg-[#0b57d0] text-white px-6 py-2.5 rounded-full text-sm font-medium hover:bg-[#0b57d0]/90 transition-all shadow-sm flex items-center gap-2"
           >
-            <Search size={16} /> 搜索创建
+            <Search size={18} /> 搜索并创建
+          </button>
+          <button onClick={openAdd} className="bg-white border border-slate-300 text-slate-700 px-5 py-2.5 rounded-full text-sm font-medium hover:bg-slate-50 flex items-center gap-2 transition-colors">
+            <Plus size={16} /> 手动添加 RSS
           </button>
           <button onClick={openSettings} className="border border-slate-200 px-5 py-2.5 rounded-full text-sm font-medium text-slate-600 hover:bg-slate-50 flex items-center gap-2">
             <SettingsIcon size={16} /> PT 设置
@@ -913,14 +1037,54 @@ const PtTab: React.FC<PtTabProps> = ({ prefill, onPrefillConsumed }) => {
       </div>
 
       {/* 添加/编辑订阅 */}
-      <Modal isOpen={isModalOpen} onClose={() => setIsModalOpen(false)} title={editing ? '编辑 PT 订阅' : '添加 PT 订阅'} footer={null}>
+      <Modal isOpen={isModalOpen} onClose={() => setIsModalOpen(false)} title={editing ? '编辑 PT 订阅' : '添加 PT 订阅'} footer={null} maxWidthClass="max-w-4xl" contentClassName="px-5 md:px-8 pb-6 max-h-[72vh] overflow-y-auto">
         <form onSubmit={handleSave} className="space-y-5">
+          {!editing && !showSourceDetails && (
+            <div className="rounded-2xl border border-[#0b57d0]/20 bg-[#eef4ff] px-4 py-3">
+              <div className="text-sm font-medium text-[#0b3a86]">资源已选择</div>
+              <div className="mt-1 text-xs text-slate-600 truncate" title={formData.rssUrl}>
+                {presets.find(p => p.key === formData.sourcePreset)?.label || formData.sourcePreset} · RSS 已自动配置
+              </div>
+            </div>
+          )}
           <div className="space-y-2">
             <label className="text-sm font-medium ui-title">订阅名称</label>
             <input type="text" required value={formData.name} onChange={e => setFormData({ ...formData, name: e.target.value })}
               className="w-full px-5 py-3 bg-slate-50 border border-slate-300 rounded-2xl text-sm outline-none focus:ring-2 focus:ring-[#0b57d0]/20" />
           </div>
 
+          {!editing && (
+            <div className="rounded-2xl border border-slate-200 p-4 space-y-4">
+              <div className="text-sm font-medium ui-title">保存位置</div>
+              <div className="space-y-2">
+                <label className="text-xs ui-muted">天翼云盘账号</label>
+                <select value={formData.accountId} onChange={e => setFormData({ ...formData, accountId: Number(e.target.value), targetFolderId: '', targetFolder: '' })}
+                  className="w-full px-5 py-3 bg-slate-50 border border-slate-300 rounded-2xl text-sm outline-none" required>
+                  <option value={0}>请选择</option>
+                  {accounts.map(a => <option key={a.id} value={a.id}>{a.alias?.trim() || a.username}</option>)}
+                </select>
+              </div>
+              <div className="space-y-2">
+                <label className="text-xs ui-muted">目标目录</label>
+                <div className="flex gap-2">
+                  <input type="text" readOnly value={formData.targetFolder || formData.targetFolderId} placeholder="选择资源要保存到的目录"
+                    className="flex-1 min-w-0 px-5 py-3 bg-slate-50 border border-slate-300 rounded-2xl text-sm outline-none" />
+                  <button type="button" onClick={() => formData.accountId ? setFolderSelectorOpen(true) : toast.warning('请先选择账号')}
+                    className="px-5 py-3 border border-slate-300 rounded-2xl text-sm font-medium hover:bg-slate-50 shrink-0">选择目录</button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {!editing && (
+            <button type="button" onClick={() => setShowSourceDetails(v => !v)}
+              className="w-full flex items-center justify-between px-4 py-3 rounded-2xl bg-slate-50 hover:bg-slate-100 text-sm font-medium ui-title">
+              <span>RSS 来源与过滤规则</span>
+              {showSourceDetails ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+            </button>
+          )}
+
+          {(editing || showSourceDetails) && <>
           <div className="space-y-2">
             <label className="text-sm font-medium ui-title">RSS 来源</label>
             <select value={formData.sourcePreset} onChange={e => {
@@ -964,6 +1128,57 @@ const PtTab: React.FC<PtTabProps> = ({ prefill, onPrefillConsumed }) => {
                 className="w-full px-5 py-3 bg-slate-50 border border-slate-300 rounded-2xl text-sm outline-none font-mono text-xs"
                 placeholder="例如: cam|ts.x264" />
             </div>
+          </div>
+
+          <div className="rounded-2xl border border-slate-200 overflow-hidden">
+            <div className="p-4 bg-slate-50 space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <div className="text-sm font-medium ui-title">文件列表与正则预览</div>
+                  <div className="text-xs ui-muted mt-0.5">先读取当前 RSS，再填写要求让 AI 生成包含/排除正则。</div>
+                </div>
+                <button type="button" onClick={() => void loadFeedPreview()} disabled={feedPreviewLoading}
+                  className="px-4 py-2 rounded-full text-xs font-medium border border-[#0b57d0]/30 text-[#0b57d0] hover:bg-[#0b57d0]/10 disabled:opacity-50 inline-flex items-center gap-1.5">
+                  {feedPreviewLoading ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
+                  {feedPreviewLoading ? '读取中' : '加载文件列表'}
+                </button>
+              </div>
+              <div className="flex flex-col md:flex-row gap-2">
+                <input type="text" value={aiRequirement} onChange={e => setAiRequirement(e.target.value)}
+                  placeholder="告诉 AI 你想要什么，例如：只要简体 1080p，排除合集和繁体"
+                  className="flex-1 px-4 py-2.5 bg-white border border-slate-300 rounded-2xl text-xs outline-none focus:ring-2 focus:ring-[#0b57d0]/20" />
+                <button type="button" onClick={generateFilterPatterns} disabled={aiGenerating || !feedPreviewItems.length}
+                  className="px-4 py-2.5 rounded-full text-xs font-medium bg-[#0b57d0] text-white hover:bg-[#0b57d0]/90 disabled:opacity-50 inline-flex items-center justify-center gap-1.5">
+                  {aiGenerating ? <Loader2 size={14} className="animate-spin" /> : <Wand2 size={14} />}
+                  {aiGenerating ? 'AI 生成中' : 'AI 生成正则'}
+                </button>
+              </div>
+              {aiExplanation && <div className="text-xs text-[#0b3a86] bg-[#eef4ff] rounded-xl px-3 py-2">{aiExplanation}</div>}
+              {invalidPattern && <div className="text-xs text-red-600">正则无效：{invalidPattern}</div>}
+              {feedPreviewError && <div className="text-xs text-red-600">{feedPreviewError}</div>}
+            </div>
+            {feedPreviewItems.length > 0 && (
+              <div className="max-h-64 overflow-y-auto divide-y divide-slate-100 bg-white">
+                <div className="sticky top-0 z-10 px-4 py-2 bg-white/95 backdrop-blur text-xs ui-muted border-b border-slate-100">
+                  当前规则匹配 {invalidPattern ? 0 : feedPreviewItems.filter(previewMatch).length} / {feedPreviewItems.length} 条
+                </div>
+                {feedPreviewItems.map((item, index) => {
+                  const matched = !invalidPattern && previewMatch(item);
+                  const meta = [item.subgroup, item.resolution, item.quality, formatSize(item.size)].filter(Boolean).join(' · ');
+                  return (
+                    <div key={`${item.title}-${index}`} className={`px-4 py-2.5 flex items-start gap-3 ${matched ? '' : 'opacity-45'}`}>
+                      <span className={`mt-0.5 shrink-0 px-2 py-0.5 rounded-full text-[10px] font-medium ${matched ? 'bg-[#c4eed0] text-[#0d4f1f]' : 'bg-slate-100 text-slate-500'}`}>
+                        {matched ? '保留' : '过滤'}
+                      </span>
+                      <div className="min-w-0">
+                        <div className="text-xs font-mono text-slate-700 break-all">{item.title}</div>
+                        {meta && <div className="text-[10px] text-slate-400 mt-0.5">{meta}</div>}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
 
           <div className="rounded-2xl border border-slate-200 overflow-hidden">
@@ -1158,17 +1373,18 @@ const PtTab: React.FC<PtTabProps> = ({ prefill, onPrefillConsumed }) => {
               </div>
             )}
           </div>
+          </>}
 
-          <div className="space-y-2">
+          {editing && <div className="space-y-2">
             <label className="text-sm font-medium ui-title">天翼云盘账号</label>
             <select value={formData.accountId} onChange={e => setFormData({ ...formData, accountId: Number(e.target.value), targetFolderId: '', targetFolder: '' })}
               className="w-full px-5 py-3 bg-slate-50 border border-slate-300 rounded-2xl text-sm outline-none" required>
               <option value={0}>请选择</option>
               {accounts.map(a => <option key={a.id} value={a.id}>{a.alias?.trim() || a.username}</option>)}
             </select>
-          </div>
+          </div>}
 
-          <div className="space-y-2">
+          {editing && <div className="space-y-2">
             <label className="text-sm font-medium ui-title">目标目录</label>
             <div className="flex gap-2">
               <input type="text" readOnly value={formData.targetFolder || formData.targetFolderId} placeholder="点击右侧按钮选择目录"
@@ -1176,7 +1392,7 @@ const PtTab: React.FC<PtTabProps> = ({ prefill, onPrefillConsumed }) => {
               <button type="button" onClick={() => formData.accountId ? setFolderSelectorOpen(true) : toast.warning('请先选择账号')}
                 className="px-5 py-3 border border-slate-300 rounded-2xl text-sm font-medium hover:bg-slate-50">选择</button>
             </div>
-          </div>
+          </div>}
 
           <Checkbox
             checked={formData.enabled}
@@ -1186,7 +1402,7 @@ const PtTab: React.FC<PtTabProps> = ({ prefill, onPrefillConsumed }) => {
 
           <div className="flex justify-end gap-3 pt-4">
             <button type="button" onClick={() => setIsModalOpen(false)} disabled={isSaving} className="px-6 py-2.5 rounded-full text-sm font-medium text-[#0b57d0] hover:bg-[#0b57d0]/10 disabled:opacity-50 disabled:cursor-not-allowed">取消</button>
-            <button type="submit" disabled={isSaving} className="px-6 py-2.5 rounded-full text-sm font-medium bg-[#0b57d0] text-white hover:bg-[#0b57d0]/90 shadow-sm disabled:opacity-50 disabled:cursor-not-allowed">{isSaving ? '保存中...' : '保存'}</button>
+            <button type="submit" disabled={isSaving || !formData.targetFolderId} className="px-6 py-2.5 rounded-full text-sm font-medium bg-[#0b57d0] text-white hover:bg-[#0b57d0]/90 shadow-sm disabled:opacity-50 disabled:cursor-not-allowed">{isSaving ? '创建中...' : editing ? '保存修改' : '创建订阅'}</button>
           </div>
         </form>
       </Modal>
@@ -1321,6 +1537,31 @@ const PtTab: React.FC<PtTabProps> = ({ prefill, onPrefillConsumed }) => {
       <Modal isOpen={isSettingsOpen} onClose={() => setIsSettingsOpen(false)} title="PT 设置" footer={null}>
         {!settings ? <div className="text-center text-slate-500 py-8">加载中...</div> : (
           <div className="space-y-5">
+            <div className="rounded-2xl border border-slate-200 p-4 space-y-3">
+              <div className="flex items-center gap-2 text-sm font-medium text-slate-800"><Search size={16} /> Mikan 站点</div>
+              <p className="text-xs text-slate-500">用于番剧搜索、字幕组选择和 RSS 拉取。首选地址不可用时会自动尝试内置镜像。</p>
+              <div className="flex flex-col sm:flex-row gap-2">
+                <input
+                  type="url"
+                  value={settings.mikanBaseUrl}
+                  onChange={e => {
+                    setSettings({ ...settings, mikanBaseUrl: e.target.value });
+                    setMikanTestStatus(null);
+                  }}
+                  placeholder="https://mikanani.kas.pub"
+                  className="flex-1 min-w-0 px-4 py-2.5 bg-slate-50 border border-slate-300 rounded-2xl text-sm outline-none font-mono text-xs"
+                />
+                <button type="button" onClick={handleTestMikan} disabled={testingMikan || !settings.mikanBaseUrl.trim()}
+                  className="px-5 py-2.5 rounded-full border border-slate-300 text-sm hover:bg-slate-50 disabled:opacity-50 shrink-0">
+                  {testingMikan ? '测试中...' : '测试地址'}
+                </button>
+              </div>
+              {mikanTestStatus && (
+                <div className={`text-xs ${mikanTestStatus.ok ? 'text-green-600' : 'text-red-600'}`}>{mikanTestStatus.message}</div>
+              )}
+              <div className="text-[11px] text-slate-400">推荐：mikanani.kas.pub；也可填写 mikanime.tv 或其他完整镜像地址。</div>
+            </div>
+
             <div className="rounded-2xl border border-slate-200 p-4 space-y-4">
               <div className="flex items-center gap-2 text-sm font-medium text-slate-800"><Download size={16} /> 下载客户端</div>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">

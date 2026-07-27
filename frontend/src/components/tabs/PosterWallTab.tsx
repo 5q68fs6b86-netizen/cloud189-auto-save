@@ -396,7 +396,7 @@ const Chip: React.FC<ChipProps> = ({ active, onClick, children }) => (
 
 // === 主组件 ===
 interface PosterWallTabProps {
-  onCreatePtSubscription?: (data: { name: string; rssUrl: string; sourcePreset: string }) => void;
+  onCreatePtSubscription?: (data: { name: string; rssUrl: string; sourcePreset: string; includePattern?: string }) => void;
   /** 跳转影巢页并预填搜索（片名 / TMDB ID） */
   onSearchHdhive?: (data: {
     query: string;
