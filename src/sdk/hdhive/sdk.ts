@@ -704,10 +704,15 @@ class HdhiveSDK {
     }
 
     private async getResourcesByCookie(type: 'movie' | 'tv', tmdbId: string | number) {
-        if (!this.cookie) {
-            return { success: false, error: '影巢 Cookie 未配置' };
+        const redirectPage = await this.fetchPage(`/tmdb/${type}/${encodeURIComponent(String(tmdbId))}`);
+        if (this.isLoginRedirect(redirectPage.url, redirectPage.html)) {
+            return { success: false, error: '影巢 Cookie 已失效或无权访问资源页', needsCookie: true };
         }
-        const page = await this.fetchPage(`/tmdb/${type}/${encodeURIComponent(String(tmdbId))}`);
+        const internalPath = this.extractInternalMediaPath(redirectPage.url, redirectPage.html);
+        if (!internalPath) {
+            return { success: false, error: '影巢页面未返回内部媒体地址' };
+        }
+        const page = await this.fetchPage(internalPath);
         if (this.isLoginRedirect(page.url, page.html)) {
             return { success: false, error: '影巢 Cookie 已失效或无权访问资源页', needsCookie: true };
         }
@@ -720,7 +725,10 @@ class HdhiveSDK {
             access_code: item.accessCode,
             is_unlocked: true
         }));
-        const pageResources = this.extractResourceEntries(page.html, page.url);
+        const groupResources = this.extractFlightGroupResources(page.html);
+        const pageResources = groupResources.length > 0
+            ? groupResources
+            : this.extractResourceEntries(page.html, page.url);
         const normalized = this.normalizeResources([...directResources, ...pageResources])
             .filter((item: any) => item.cloudType === 'cloud189');
         return { success: true, data: normalized };
@@ -893,13 +901,18 @@ class HdhiveSDK {
         if (bridgeResult) {
             return bridgeResult;
         }
+        const cookieResult = await this.getResourcesByCookie(type, tmdbId);
+        if (cookieResult.success) {
+            this.setCache(cacheKey, cookieResult.data);
+            return cookieResult;
+        }
         if (openApiResult) {
             return openApiResult;
         }
         if (this.apiKey && !this.isAuthorized) {
             return { success: false, error: '请先进行 OAuth 授权，或配置影巢 Cookie/Browser Bridge 使用网页模式', needsOAuth: true };
         }
-        return { success: false, error: '影巢 Cookie、OpenAPI 凭证或 Browser Bridge 未配置' };
+        return cookieResult;
     }
 
     private async unlockResourceByOpenApi(slug: string): Promise<{ success: boolean; data?: { link: string; code: string; fullUrl: string; points: number }; error?: string; needsOAuth?: boolean }> {
@@ -1116,8 +1129,29 @@ class HdhiveSDK {
         return qualities.filter(([pattern]) => (pattern as RegExp).test(text)).map(([, label]) => label as string);
     }
 
+    private parseSize(bytes: number | string): number {
+        if (typeof bytes === 'number') {
+            return Number.isFinite(bytes) && bytes > 0 ? bytes : 0;
+        }
+        const text = String(bytes || '').trim();
+        if (!text) return 0;
+        if (/^\d+(?:\.\d+)?$/.test(text)) return Number(text);
+        const units: Record<string, number> = {
+            B: 1,
+            KB: 1024,
+            MB: 1024 ** 2,
+            GB: 1024 ** 3,
+            TB: 1024 ** 4
+        };
+        let size = 0;
+        for (const match of text.matchAll(/(\d+(?:\.\d+)?)\s*(TB|GB|MB|KB|B)\b/gi)) {
+            size = Math.max(size, Number(match[1]) * units[match[2].toUpperCase()]);
+        }
+        return Math.round(size);
+    }
+
     private formatSize(bytes: number | string): string {
-        const size = Number(bytes || 0);
+        const size = this.parseSize(bytes);
         if (!Number.isFinite(size) || size <= 0) return '未知';
         const units = ['B', 'KB', 'MB', 'GB', 'TB'];
         let value = size;
@@ -1228,16 +1262,17 @@ class HdhiveSDK {
             const hasPointField = resource.unlock_points !== undefined || resource.points !== undefined || resource.cost !== undefined;
             const points = hasPointField ? resource.unlock_points ?? resource.points ?? resource.cost ?? 0 : null;
             const explicitFree = resource.is_free === true || resource.isFree === true;
+            const size = this.parseSize(resource.share_size || resource.size || resource.fileSize || 0);
             return {
                 id: String(resourceId),
                 slug: resource.slug || resource.id || resource.resourceId || resource.resource_id || '',
-                title: resource.title || resource.name || resource.resource_name || resource.media_name || '未命名资源',
+                title: resource.remark || resource.title || resource.name || resource.resource_name || resource.media_name || '未命名资源',
                 cloudType,
                 cloudTypeName: cloudMeta.name,
                 cloudTypeIcon: cloudMeta.icon,
                 cloudTypeColor: cloudMeta.color,
-                size: resource.share_size || resource.size || resource.fileSize || 0,
-                sizeFormatted: this.formatSize(resource.share_size || resource.size || resource.fileSize),
+                size,
+                sizeFormatted: this.formatSize(size),
                 points,
                 isFree: explicitFree || (points !== null && Number(points) === 0),
                 expired: !!(resource.expired || resource.isExpired),
@@ -1249,6 +1284,60 @@ class HdhiveSDK {
                 isUnlocked: !!(resource.is_unlocked || resource.isUnlocked || parsed.url)
             };
         });
+    }
+
+    private extractInternalMediaPath(url: string, html: string): string {
+        try {
+            const pathname = new URL(url).pathname;
+            if (/^\/(?:movie|tv)\/[A-Za-z0-9._~-]+$/.test(pathname)) return pathname;
+        } catch {}
+        const text = this.decodeFlightText(html);
+        return text.match(/NEXT_REDIRECT;replace;(\/(?:movie|tv)\/[A-Za-z0-9._~-]+);\d+/)?.[1]
+            || text.match(/(\/(?:movie|tv)\/[a-f0-9]{32})/i)?.[1]
+            || '';
+    }
+
+    private extractFlightGroupResources(html: string): any[] {
+        const scriptPattern = /<script[^>]*>self\.__next_f\.push\((\[1,"[\s\S]*?"\])\)<\/script>/g;
+        let scriptMatch: RegExpExecArray | null;
+        while ((scriptMatch = scriptPattern.exec(html)) !== null) {
+            let payload = '';
+            try {
+                const flightChunk = JSON.parse(scriptMatch[1]);
+                payload = typeof flightChunk?.[1] === 'string' ? flightChunk[1] : '';
+            } catch {
+                continue;
+            }
+            const marker = payload.indexOf('{"websites"');
+            if (marker < 0 || !payload.includes('"groupData"')) continue;
+            const objectText = this.extractJsonObject(payload, marker);
+            if (!objectText) continue;
+            try {
+                const data = JSON.parse(objectText);
+                const resources = data?.groupData?.['189'] || data?.groupData?.cloud189;
+                if (Array.isArray(resources)) return resources;
+            } catch {}
+        }
+        return [];
+    }
+
+    private extractJsonObject(text: string, start: number): string {
+        let depth = 0;
+        let inString = false;
+        let escaped = false;
+        for (let index = start; index < text.length; index += 1) {
+            const char = text[index];
+            if (inString) {
+                if (escaped) escaped = false;
+                else if (char === '\\') escaped = true;
+                else if (char === '"') inString = false;
+                continue;
+            }
+            if (char === '"') inString = true;
+            else if (char === '{') depth += 1;
+            else if (char === '}' && --depth === 0) return text.slice(start, index + 1);
+        }
+        return '';
     }
 
     private extractResourceTitle(block: string, fallback: string): string {
