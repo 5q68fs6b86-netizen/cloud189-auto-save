@@ -94,23 +94,7 @@ class TelegramBotService {
         // 设置命令菜单
         await this.bot.setMyCommands([
             { command: 'start', description: '首次使用引导' },
-            { command: 'help', description: '帮助信息' },
-            { command: 'search_cs', description: '搜索CloudSaver资源' },
-            { command: 'hdhive', description: '搜索影巢资源' },
-            { command: 'hdhive_checkin', description: '影巢签到' },
-            { command: 'pt_search', description: '搜索PT站点资源' },
-            { command: 'series', description: '自动追剧(正常任务)' },
-            { command: 'lazy_series', description: '自动追剧(懒转存STRM)' },
-            { command: 'accounts', description: '账号列表' },
-            { command: 'tasks', description: '任务列表' },
-            { command: 'execute_all', description: '执行所有任务' },
-            { command: 'fl', description: '常用目录列表' },
-            { command: 'fs', description: '添加常用目录' },
-            { command: 'stats', description: '系统统计' },
-            { command: 'detail', description: '任务详情' },
-            { command: 'logs', description: '查看日志' },
-            { command: 'subs', description: '订阅列表' },
-            { command: 'cancel', description: '取消当前操作' },
+            { command: 'help', description: '打开全功能按钮菜单' },
         ]);
 
         // 加载默认账号

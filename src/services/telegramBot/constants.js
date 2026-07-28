@@ -15,13 +15,21 @@ const CB = {
     TASK_DETAIL: 'td',         // 任务详情
     TASK_RETRY: 'tr',          // 重试任务
     TASK_EXECUTE: 'te',        // 执行任务
+    TASK_STRM: 'ts',           // 生成 STRM
+    TASK_EMBY: 'em',           // 通知 Emby
+    TASK_LOGS: 'tl',           // 查看任务日志
     STATS_REFRESH: 'sr',       // 刷新统计
     HELP_NAV: 'hn',            // help 快捷导航
+    MAIN_MENU: 'mm',           // 主菜单功能入口
+    SEARCH_RESULT: 'cr',       // CloudSaver 搜索结果
+    FOLDER_DELETE: 'fx',       // 删除常用目录
     SUBS_PAGE: 'sp',           // 订阅分页
     SILENT_MODE: 'sm',         // 静默模式
     PT_SEARCH_SITE: 'ps',      // PT 搜索选择站点
     PT_SEARCH_GROUP: 'pg',     // PT 搜索选择字幕组
+    PT_SEARCH_RESULT: 'pi',    // PT 搜索结果
     PT_SUB_PAGE: 'pp',         // PT 订阅列表分页
+    PT_SUB_DETAIL: 'pv',       // PT 订阅详情
     PT_RELEASE_PAGE: 'pr',     // PT Release 列表分页
     PT_SUB_TOGGLE: 'pt',       // PT 订阅启用/禁用
     PT_SUB_REFRESH: 'px',      // PT 订阅刷新

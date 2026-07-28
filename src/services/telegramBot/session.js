@@ -96,6 +96,7 @@ class SessionStore {
                 taskListFilter: null,
                 commonFolderListMsgId: null,
             },
+            inputMode: null,
             search: {
                 active: false,
                 timeoutRef: null,

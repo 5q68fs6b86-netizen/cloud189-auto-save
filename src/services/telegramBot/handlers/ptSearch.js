@@ -107,7 +107,7 @@ async function handlePtSearchMessage(svc, msg) {
 
             if (r.groups?.length) {
                 session.ptSearch.groups = r.groups;
-                text += '可用字幕组（输入编号选择）：\n';
+                text += '可用字幕组（点击按钮选择）：\n';
                 r.groups.forEach((g, i) => {
                     text += `${i + 1}. ${escapeHtml(g.name)} (${g.itemCount} 个资源)\n`;
                 });
@@ -116,7 +116,11 @@ async function handlePtSearchMessage(svc, msg) {
                 session.ptSearch.active = false;
             }
 
-            await edit(svc.bot, chatId, statusMsg?.message_id, text);
+            const keyboard = r.groups?.map((g, i) => [{
+                text: `${i + 1}. ${g.name}`,
+                callback_data: serializeCb({ t: CB.PT_SEARCH_GROUP, i: i + 1 }),
+            }]) || [];
+            await edit(svc.bot, chatId, statusMsg?.message_id, text, { keyboard });
             return;
         }
 
@@ -125,9 +129,13 @@ async function handlePtSearchMessage(svc, msg) {
         results.forEach((r, i) => {
             text += `${i + 1}. ${escapeHtml(r.title)}\n`;
         });
-        text += '\n输入编号选择番剧';
+        text += '\n点击按钮选择番剧';
 
-        await edit(svc.bot, chatId, statusMsg?.message_id, text);
+        const keyboard = results.map((r, i) => [{
+            text: `${i + 1}. ${r.title}`.substring(0, 40),
+            callback_data: serializeCb({ t: CB.PT_SEARCH_RESULT, i: i + 1 }),
+        }]);
+        await edit(svc.bot, chatId, statusMsg?.message_id, text, { keyboard });
     } catch (error) {
         await edit(svc.bot, chatId, statusMsg?.message_id, friendlyError(error));
     }
@@ -157,16 +165,32 @@ async function handleResultSelect(svc, chatId, result) {
             return;
         }
 
-        let text = `${bold(escapeHtml(result.title))}\n\n选择字幕组（输入编号）：\n\n`;
+        let text = `${bold(escapeHtml(result.title))}\n\n选择字幕组：\n\n`;
         groups.forEach((g, i) => {
             const extra = g.itemCount ? ` (${g.itemCount} 个资源)` : '';
             text += `${i + 1}. ${escapeHtml(g.name)}${extra}\n`;
         });
 
-        await edit(svc.bot, chatId, statusMsg?.message_id, text);
+        const keyboard = groups.map((g, i) => [{
+            text: `${i + 1}. ${g.name}`.substring(0, 40),
+            callback_data: serializeCb({ t: CB.PT_SEARCH_GROUP, i: i + 1 }),
+        }]);
+        await edit(svc.bot, chatId, statusMsg?.message_id, text, { keyboard });
     } catch (error) {
         await edit(svc.bot, chatId, statusMsg?.message_id, friendlyError(error));
     }
+}
+
+async function handleResultCallback(svc, chatId, index) {
+    const result = svc.sessionStore.get(chatId).ptSearch.results[Number(index) - 1];
+    if (!result) return send(svc.bot, chatId, '⚠️ 搜索结果已失效，请重新搜索');
+    await handleResultSelect(svc, chatId, result);
+}
+
+async function handleGroupCallback(svc, chatId, index, messageId) {
+    const group = svc.sessionStore.get(chatId).ptSearch.groups[Number(index) - 1];
+    if (!group) return send(svc.bot, chatId, '⚠️ 字幕组结果已失效，请重新搜索');
+    await showRssResult(svc, chatId, group, messageId);
 }
 
 // ─── 显示最终 RSS 结果 ───
@@ -213,4 +237,6 @@ module.exports = {
     handlePtSearch,
     handleSiteSelect,
     handlePtSearchMessage,
+    handleResultCallback,
+    handleGroupCallback,
 };

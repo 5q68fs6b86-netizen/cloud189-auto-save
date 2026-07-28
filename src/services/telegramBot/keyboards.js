@@ -120,8 +120,30 @@ function taskActionRow(taskId) {
     return [
         { text: '🔄 执行', callback_data: serializeCb({ t: CB.TASK_EXECUTE, i: taskId }) },
         { text: '🔁 重试', callback_data: serializeCb({ t: CB.TASK_RETRY, i: taskId }) },
+        { text: '📁 STRM', callback_data: serializeCb({ t: CB.TASK_STRM, i: taskId }) },
+        { text: '🎬 Emby', callback_data: serializeCb({ t: CB.TASK_EMBY, i: taskId }) },
+        { text: '📜 日志', callback_data: serializeCb({ t: CB.TASK_LOGS, i: taskId }) },
         { text: '🗑 删除', callback_data: serializeCb({ t: CB.DELETE_TASK, i: taskId, p: true }) },
     ];
+}
+
+function taskListKeyboard(tasks, pageRow = []) {
+    const rows = [];
+    for (const task of tasks) {
+        const name = truncateBtn(task.resourceName || `任务 #${task.id}`, 18);
+        rows.push([
+            { text: `📝 ${name}`, callback_data: serializeCb({ t: CB.TASK_DETAIL, i: task.id }) },
+            { text: '▶️ 执行', callback_data: serializeCb({ t: CB.TASK_EXECUTE, i: task.id }) },
+        ]);
+        rows.push([
+            { text: '📁 STRM', callback_data: serializeCb({ t: CB.TASK_STRM, i: task.id }) },
+            { text: '🎬 Emby', callback_data: serializeCb({ t: CB.TASK_EMBY, i: task.id }) },
+            { text: '📜 日志', callback_data: serializeCb({ t: CB.TASK_LOGS, i: task.id }) },
+            { text: '🗑 删除', callback_data: serializeCb({ t: CB.DELETE_TASK, i: task.id, p: true }) },
+        ]);
+    }
+    if (pageRow.length > 0) rows.push(pageRow);
+    return rows;
 }
 
 /**
@@ -161,6 +183,31 @@ function helpNavKeyboard() {
     ];
 }
 
+function mainMenuKeyboard() {
+    const button = (text, action) => ({
+        text,
+        callback_data: serializeCb({ t: CB.MAIN_MENU, a: action }),
+    });
+    return [
+        [button('👤 账号', 'accounts'), button('📋 全部任务', 'tasks')],
+        [button('⏳ 待执行', 'tasks_pending'), button('🔄 执行中', 'tasks_processing'), button('❌ 失败', 'tasks_failed')],
+        [button('🔍 CloudSaver', 'search'), button('🎞 影巢', 'hdhive'), button('📡 PT 搜索', 'pt_search')],
+        [button('📺 自动追剧', 'series'), button('⚡ 懒转存追剧', 'lazy_series'), button('🎬 TMDB', 'tmdb')],
+        [button('📁 常用目录', 'folders'), button('➕ 添加目录', 'folder_add')],
+        [button('📊 统计', 'stats'), button('📜 日志', 'logs'), button('🔔 分享订阅', 'subs')],
+        [button('📡 PT 订阅', 'pt_subs'), button('✅ 影巢签到', 'hdhive_checkin')],
+        [button('🔇 静默模式', 'silent'), button('▶️ 执行全部', 'execute_all')],
+        [button('✖️ 取消操作', 'cancel'), button('❓ 帮助', 'help')],
+    ];
+}
+
+function cloudSearchKeyboard(results = []) {
+    return results.slice(0, 20).map((item, index) => [{
+        text: truncateBtn(`${index + 1}. 📥 ${item?.title || '未命名资源'}`, 36),
+        callback_data: serializeCb({ t: CB.SEARCH_RESULT, i: index + 1 }),
+    }]);
+}
+
 /**
  * 构建影巢搜索结果键盘
  */
@@ -197,9 +244,12 @@ module.exports = {
     multiColumn,
     folderKeyboard,
     taskActionRow,
+    taskListKeyboard,
     ptSubActionRow,
     ptReleaseActionRow,
     helpNavKeyboard,
+    mainMenuKeyboard,
+    cloudSearchKeyboard,
     hdhiveSearchKeyboard,
     hdhiveResourceKeyboard,
 };

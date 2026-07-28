@@ -4,13 +4,13 @@
 const ConfigService = require('../../ConfigService');
 const { send, edit, deleteMsg } = require('../messaging');
 const { helpText, desensitizeUsername } = require('../templates');
-const { helpNavKeyboard, serializeCb } = require('../keyboards');
+const { mainMenuKeyboard, serializeCb } = require('../keyboards');
 const { escapeHtml } = require('../escape');
 const { CB } = require('../constants');
 
 async function handleHelp(svc, msg) {
     const text = helpText();
-    const keyboard = helpNavKeyboard();
+    const keyboard = mainMenuKeyboard();
     await send(svc.bot, msg.chat.id, text, { keyboard });
 }
 
@@ -25,18 +25,12 @@ async function handleStart(svc, msg) {
         '',
         currentAccount,
         '',
-        '推荐你按这个顺序开始：',
-        '1. /accounts 选择账号',
-        '2. /fl 查看常用目录',
-        '3. 直接发送 cloud.189.cn 分享链接创建任务',
-        '4. /search_cs 搜索 CloudSaver 资源',
-        '5. /hdhive 搜索影巢资源',
-        '6. /tasks 查看当前任务',
+        '点击下方按钮即可使用全部功能。',
+        '创建转存任务时，也可以直接发送 cloud.189.cn 分享链接。',
         '',
-        '常用快捷命令：',
-        '/help /tasks /hdhive /stats /logs /subs',
+        '需要输入关键词的功能会在点击后提示输入。',
     ].join('\n');
-    const keyboard = helpNavKeyboard();
+    const keyboard = mainMenuKeyboard();
     await send(svc.bot, chatId, text, { keyboard });
 }
 
@@ -95,6 +89,7 @@ async function handleSetAccount(svc, chatId, data, messageId) {
 async function handleCancel(svc, msg) {
     const chatId = msg.chat.id;
     const session = svc.sessionStore.get(chatId);
+    session.inputMode = null;
 
     // 清除搜索模式
     if (session.search.timeoutRef) {
@@ -130,6 +125,55 @@ async function handleCancel(svc, msg) {
     }
 
     await send(svc.bot, chatId, '已取消当前操作');
+}
+
+async function handleMainMenu(svc, chatId, action, messageId) {
+    const msg = { chat: { id: chatId } };
+    const session = svc.sessionStore.get(chatId);
+    // 切换菜单功能时，不能让上一个“等待输入”状态接管新消息。
+    session.inputMode = null;
+    const requireAccount = async (handler) => {
+        if (!svc.checkAccount(chatId)) {
+            await send(svc.bot, chatId, '请先点击“账号”按钮选择账号');
+            return;
+        }
+        await handler();
+    };
+
+    switch (action) {
+        case 'accounts': return showAccounts(svc, chatId);
+        case 'tasks': return requireAccount(() => require('./tasks').handleTaskPage(svc, chatId, 1));
+        case 'tasks_pending': return requireAccount(() => require('./tasks').handleTaskPage(svc, chatId, 1, null, 'pending'));
+        case 'tasks_processing': return requireAccount(() => require('./tasks').handleTaskPage(svc, chatId, 1, null, 'processing'));
+        case 'tasks_failed': return requireAccount(() => require('./tasks').handleTaskPage(svc, chatId, 1, null, 'failed'));
+        case 'search': return require('./search').handleSearchMode(svc, msg);
+        case 'hdhive': return require('./hdhive').handleHdhive(svc, msg);
+        case 'pt_search': return require('./ptSearch').handlePtSearch(svc, msg);
+        case 'folders': return requireAccount(() => require('./folders').handleCommonFolders(svc, msg));
+        case 'folder_add': return requireAccount(() => require('./folders').handleFolderTree(svc, msg));
+        case 'stats': return require('./stats').handleStats(svc, msg);
+        case 'logs': return require('./logs').handleLogs(svc, msg);
+        case 'subs': return require('./subs').handleSubs(svc, msg);
+        case 'pt_subs': return require('./ptSubs').handlePtSubs(svc, msg);
+        case 'hdhive_checkin': return require('./hdhive').handleCheckin(svc, msg);
+        case 'silent':
+            if (!svc.checkAdmin(chatId)) return send(svc.bot, chatId, '⚠️ 仅管理员可执行该操作');
+            return handleSilentMode(svc, msg);
+        case 'cancel': return handleCancel(svc, msg);
+        case 'help': return handleHelp(svc, msg);
+        case 'execute_all':
+            if (!svc.checkAdmin(chatId)) return send(svc.bot, chatId, '⚠️ 仅管理员可执行该操作');
+            return require('./tasks').handleExecuteAll(svc, msg);
+        case 'series':
+        case 'lazy_series':
+        case 'tmdb':
+            session.inputMode = action;
+            return send(svc.bot, chatId, action === 'tmdb'
+                ? '🎬 请输入 TMDB 搜索关键词，可在末尾附加年份'
+                : `📺 请输入剧名，可在末尾附加年份\n模式：${action === 'series' ? '普通追剧' : '懒转存 STRM'}\n\n点击“取消操作”可退出`);
+        default:
+            return handleStart(svc, msg);
+    }
 }
 
 async function handleHelpNav(svc, chatId, view, messageId) {
@@ -187,4 +231,5 @@ module.exports = {
     handleHelpNav,
     handleSilentMode,
     handleSilentModeCallback,
+    handleMainMenu,
 };
