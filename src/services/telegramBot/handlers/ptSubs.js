@@ -51,6 +51,13 @@ async function handlePtSubsPage(svc, chatId, page = 1, messageId = null) {
         });
 
         const keyboard = [];
+        subs.forEach(sub => {
+            keyboard.push([
+                { text: `📝 ${String(sub.name).substring(0, 18)}`, callback_data: serializeCb({ t: CB.PT_SUB_DETAIL, i: sub.id }) },
+                { text: '🔄 刷新', callback_data: serializeCb({ t: CB.PT_SUB_REFRESH, i: sub.id }) },
+                { text: '📋 Releases', callback_data: serializeCb({ t: CB.PT_RELEASE_PAGE, i: sub.id, p: 1 }) },
+            ]);
+        });
         const pageRow = paginationRow(CB.PT_SUB_PAGE, page, totalPages);
         if (pageRow.length > 0) keyboard.push(pageRow);
 
@@ -154,6 +161,10 @@ async function handlePtDetail(svc, msg, subId) {
     }
 }
 
+async function handlePtDetailCb(svc, chatId, subId) {
+    await handlePtDetail(svc, { chat: { id: chatId } }, subId);
+}
+
 // ─── /pt_refresh_<ID> ───
 async function handlePtRefresh(svc, msg, subId) {
     const chatId = msg.chat.id;
@@ -239,16 +250,15 @@ async function handlePtReleasesPage(svc, chatId, subId, page = 1, messageId = nu
         const totalPages = Math.ceil(total / pageSize);
 
         let text = `📋 ${bold(escapeHtml(sub.name))} Releases (第${page}页，共${total}个)\n\n`;
+        const keyboard = [];
         releases.forEach((rel, i) => {
             text += ptReleaseCard(rel, skip + i + 1) + '\n';
-            // 操作按钮用命令链接
             if (rel.status === 'failed' || rel.status === 'upload_failed') {
-                text += `   🔁 重试：/pt_retry_${rel.id}  🗑 删除：/pt_del_${rel.id}\n`;
+                keyboard.push(ptReleaseActionRow(rel.id));
             }
             text += '\n';
         });
 
-        const keyboard = [];
         const pageRow = paginationRow(CB.PT_RELEASE_PAGE, page, totalPages);
         if (pageRow.length > 0) keyboard.push(pageRow);
 
@@ -295,6 +305,7 @@ module.exports = {
     handlePtSubs,
     handlePtSubsPage,
     handlePtDetail,
+    handlePtDetailCb,
     handlePtRefresh,
     handlePtToggle,
     handlePtRefreshCb,

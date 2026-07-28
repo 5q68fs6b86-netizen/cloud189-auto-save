@@ -6,6 +6,7 @@ const { searchResults } = require('../templates');
 const { escapeHtml, bold, link } = require('../escape');
 const { friendlyError } = require('../errors');
 const { SEARCH_TIMEOUT_MS } = require('../constants');
+const { cloudSearchKeyboard } = require('../keyboards');
 
 // ─── /search_cs ───
 async function handleSearchMode(svc, msg) {
@@ -86,9 +87,26 @@ async function handleSearchMessage(svc, msg) {
         });
 
         const text = searchResults(result);
-        await edit(svc.bot, chatId, statusMsg?.message_id, `搜索结果：\n\n${text}`);
+        await edit(svc.bot, chatId, statusMsg?.message_id, `搜索结果：\n\n${text}`, {
+            keyboard: cloudSearchKeyboard(result),
+        });
     } catch (error) {
         await edit(svc.bot, chatId, statusMsg?.message_id, friendlyError(error));
+    }
+}
+
+async function handleSearchResultCallback(svc, chatId, index) {
+    const session = svc.sessionStore.get(chatId);
+    const cacheShareLink = session.search.resultMap.get(Number(index));
+    if (!cacheShareLink) {
+        await send(svc.bot, chatId, '⚠️ 搜索结果已失效，请重新搜索');
+        return;
+    }
+    try {
+        const { url: shareLink, accessCode } = svc.cloud189Utils.parseCloudShare(cacheShareLink);
+        await require('./share').processShareLink(svc, chatId, shareLink, accessCode);
+    } catch (error) {
+        await send(svc.bot, chatId, friendlyError(error));
     }
 }
 
@@ -176,4 +194,5 @@ module.exports = {
     handleSearchMode,
     handleSearchMessage,
     handleTmdb,
+    handleSearchResultCallback,
 };

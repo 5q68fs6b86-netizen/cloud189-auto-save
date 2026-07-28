@@ -3,7 +3,7 @@
  */
 const { send, edit, typing, deleteMsg } = require('../messaging');
 const { commonFolderList, desensitizeUsername } = require('../templates');
-const { folderKeyboard, serializeCb } = require('../keyboards');
+const { folderKeyboard, serializeCb, truncateBtn } = require('../keyboards');
 const { escapeHtml } = require('../escape');
 const { friendlyError } = require('../errors');
 const { CB } = require('../constants');
@@ -18,10 +18,14 @@ async function handleCommonFolders(svc, msg) {
         order: { path: 'ASC' },
     });
 
-    const keyboard = [[{
+    const keyboard = folders.map(folder => [{
+        text: truncateBtn(`🗑 ${folder.path}`, 36),
+        callback_data: serializeCb({ t: CB.FOLDER_DELETE, f: folder.id }),
+    }]);
+    keyboard.push([{
         text: '📁 添加常用目录',
         callback_data: serializeCb({ t: CB.FOLDER_DRILL, f: '-11' }),
-    }]];
+    }]);
 
     const username = session.account.entity?.username;
     const message = commonFolderList(folders, username);
@@ -191,10 +195,15 @@ async function handleDeleteFolder(svc, msg, folderId) {
     }
 }
 
+async function handleDeleteFolderCb(svc, chatId, folderId) {
+    await handleDeleteFolder(svc, { chat: { id: chatId } }, folderId);
+}
+
 module.exports = {
     handleCommonFolders,
     handleFolderTree,
     handleFolderDrill,
     handleFolderSave,
     handleDeleteFolder,
+    handleDeleteFolderCb,
 };

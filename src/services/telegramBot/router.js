@@ -308,6 +308,16 @@ function registerCommands(svc) {
         if (msg.text?.startsWith('/')) return;
         // PT 搜索模式优先
         const session = svc.sessionStore.get(msg.chat.id);
+        if (session.inputMode) {
+            const mode = session.inputMode;
+            session.inputMode = null;
+            if (mode === 'tmdb') {
+                await getHandlers().search.handleTmdb(svc, msg, msg.text?.trim() || '');
+            } else {
+                await getHandlers().series.handleSeries(svc, msg, msg.text?.trim() || '', mode === 'series' ? 'normal' : 'lazy');
+            }
+            return;
+        }
         if (session.ptSearch.active) {
             await getHandlers().ptSearch.handlePtSearchMessage(svc, msg);
             return;
@@ -330,6 +340,10 @@ function registerCommands(svc) {
 
         const chatId = callbackQuery.message.chat.id;
         const messageId = callbackQuery.message.message_id;
+        if (!svc.checkChatId(chatId)) {
+            await bot.answerCallbackQuery(callbackQuery.id, { text: '无权操作' }).catch(() => {});
+            return;
+        }
 
         try {
             const handled = await withCallbackLock(callbackQuery, data, async () => {
@@ -387,6 +401,18 @@ function registerCommands(svc) {
                     case CB.TASK_EXECUTE:
                         await getHandlers().tasks.handleExecuteCb(svc, chatId, data.i, messageId);
                         break;
+                    case CB.TASK_STRM:
+                        await getHandlers().tasks.handleStrmCb(svc, chatId, data.i);
+                        break;
+                    case CB.TASK_EMBY:
+                        await getHandlers().tasks.handleEmbyCb(svc, chatId, data.i);
+                        break;
+                    case CB.TASK_LOGS:
+                        await getHandlers().logs.handleLogs(svc, { chat: { id: chatId } }, data.i);
+                        break;
+                    case CB.STATS_REFRESH:
+                        await getHandlers().stats.handleStats(svc, { chat: { id: chatId } });
+                        break;
                     case CB.TASK_RETRY:
                         if (!svc.checkAdmin(chatId)) {
                             await send(bot, chatId, '⚠️ 仅管理员可执行该操作');
@@ -400,17 +426,43 @@ function registerCommands(svc) {
                     case CB.HELP_NAV:
                         await getHandlers().basics.handleHelpNav(svc, chatId, data.v, messageId);
                         break;
+                    case CB.MAIN_MENU:
+                        await getHandlers().basics.handleMainMenu(svc, chatId, data.a, messageId);
+                        break;
+                    case CB.SEARCH_RESULT:
+                        await getHandlers().search.handleSearchResultCallback(svc, chatId, data.i);
+                        break;
+                    case CB.FOLDER_DELETE:
+                        if (!svc.checkAdmin(chatId)) {
+                            await send(bot, chatId, '⚠️ 仅管理员可执行该操作');
+                            return;
+                        }
+                        await getHandlers().folders.handleDeleteFolderCb(svc, chatId, data.f);
+                        break;
                     case CB.SUBS_PAGE:
                         await getHandlers().subs.handleSubsPage(svc, chatId, data.p, messageId);
                         break;
                     case CB.SILENT_MODE:
+                        if (!svc.checkAdmin(chatId)) {
+                            await send(bot, chatId, '⚠️ 仅管理员可执行该操作');
+                            return;
+                        }
                         await getHandlers().basics.handleSilentModeCallback(svc, chatId, data, messageId);
                         break;
                     case CB.PT_SEARCH_SITE:
                         await getHandlers().ptSearch.handleSiteSelect(svc, chatId, messageId, data.s);
                         break;
+                    case CB.PT_SEARCH_RESULT:
+                        await getHandlers().ptSearch.handleResultCallback(svc, chatId, data.i);
+                        break;
+                    case CB.PT_SEARCH_GROUP:
+                        await getHandlers().ptSearch.handleGroupCallback(svc, chatId, data.i, messageId);
+                        break;
                     case CB.PT_SUB_PAGE:
                         await getHandlers().ptSubs.handlePtSubsPage(svc, chatId, data.p, messageId);
+                        break;
+                    case CB.PT_SUB_DETAIL:
+                        await getHandlers().ptSubs.handlePtDetailCb(svc, chatId, data.i);
                         break;
                     case CB.PT_RELEASE_PAGE:
                         await getHandlers().ptSubs.handlePtReleasesPage(svc, chatId, data.i, data.p, messageId);

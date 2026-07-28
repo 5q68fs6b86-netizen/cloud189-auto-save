@@ -42,12 +42,7 @@ function taskCard(task) {
         `⏱ 进度：${escapeHtml(episodes)}\n` +
         `🔄 状态：${status}\n` +
         `⌚️ 更新：${escapeHtml(updated)}\n` +
-        `▶️ 执行：/execute_${task.id}\n` +
-        `📁 STRM：/strm_${task.id}\n` +
-        `🎬 Emby：/emby_${task.id}\n` +
-        `📝 详情：/detail_${task.id}\n` +
-        `📜 日志：/logs_${task.id}\n` +
-        `❌ 删除：/dt_${task.id}`
+        `🆔 ID：${task.id}`
     );
 }
 
@@ -102,7 +97,7 @@ function statsCard(statusCounts, recentCount, failedTasks) {
             const err = task.lastError
                 ? escapeHtml(task.lastError.substring(0, 60))
                 : '未知错误';
-            text += `  ${i + 1}. ${name}\n     ${err}\n     /retry_${task.id}\n`;
+            text += `  ${i + 1}. ${name}\n     ${err}\n`;
         });
     }
 
@@ -115,50 +110,13 @@ function statsCard(statusCounts, recentCount, failedTasks) {
 function helpText() {
     return (
         `🤖 ${bold('天翼云盘机器人使用指南')}\n\n` +
-        `📋 ${bold('基础命令')}\n` +
-        `/start - 首次使用引导\n` +
-        `/help - 显示帮助信息\n` +
-        `/accounts - 账号列表与切换\n` +
-        `/tasks - 显示下载任务列表\n` +
-        `/tasks_failed - 查看失败任务\n` +
-        `/tasks_pending - 查看待执行任务\n` +
-        `/tasks_processing - 查看执行中任务\n` +
-        `/fl - 显示常用目录列表\n` +
-        `/fs - 添加常用目录\n` +
-        `/stats - 系统统计信息\n` +
-        `/silent - 静默模式设置\n` +
-        `/cancel - 取消当前操作\n\n` +
-        `🔍 ${bold('搜索与追剧')}\n` +
-        `/search_cs - 搜索CloudSaver资源\n` +
-        `/hdhive [关键字] - 搜索影巢资源\n` +
-        `/hdhive_checkin - 影巢签到\n` +
-        `/series 剧名 [年份] - 自动追剧(正常任务)\n` +
-        `/lazy_series 剧名 [年份] - 自动追剧(懒转存STRM)\n\n` +
-        `📝 ${bold('任务操作')}\n` +
-        `/execute_[ID] - 执行指定任务\n` +
-        `/execute_all - 执行所有任务\n` +
-        `/detail_[ID] - 查看任务详情\n` +
-        `/retry_[ID] - 重试失败任务\n` +
-        `/strm_[ID] - 生成STRM文件\n` +
-        `/emby_[ID] - 通知Emby刷新\n` +
-        `/dt_[ID] - 删除指定任务\n` +
-        `/df_[ID] - 删除指定常用目录\n\n` +
-        `📋 ${bold('日志与订阅')}\n` +
-        `/logs - 查看最近日志\n` +
-        `/subs - 查看订阅列表\n\n` +
-        `📡 ${bold('PT 管理')}\n` +
-        `/pt_subs - PT 订阅列表\n` +
-        `/pt_detail_[ID] - PT 订阅详情\n` +
-        `/pt_refresh_[ID] - 刷新 PT 订阅\n` +
-        `/pt_releases_[ID] - 查看 Releases\n` +
-        `/pt_search - PT 站点搜索\n\n` +
-        `📥 ${bold('创建任务')}\n` +
-        `直接发送天翼云盘分享链接即可创建任务\n` +
-        `格式：链接（支持访问码的链接）\n\n` +
-        `🎬 ${bold('自动追剧')}\n` +
-        `1. /series 北上 2025\n` +
-        `2. /lazy_series 北上 2025\n` +
-        `3. 使用系统页里配置的默认账号与默认目录`
+        `全部功能已放在下方按钮菜单中，无需记忆命令。\n\n` +
+        `📋 ${bold('任务')}：查看各状态任务，并通过按钮执行、重试、生成 STRM、刷新 Emby、看日志或删除。\n` +
+        `🔍 ${bold('搜索')}：支持 CloudSaver、影巢、PT 与 TMDB。\n` +
+        `📺 ${bold('追剧')}：点击普通追剧或懒转存追剧后输入剧名和年份。\n` +
+        `📁 ${bold('目录')}：查看、添加和删除常用目录。\n` +
+        `📡 ${bold('订阅')}：查看分享订阅和 PT 订阅。\n\n` +
+        `创建转存任务仍可直接发送天翼云盘分享链接（支持访问码）。`
     );
 }
 
@@ -170,9 +128,7 @@ function commonFolderList(folders, username) {
     if (!folders || folders.length === 0) {
         return `当前账号: ${escapeHtml(user)}\n未找到常用目录，请先添加常用目录`;
     }
-    const list = folders.map(f =>
-        `📁 ${escapeHtml(f.path)}\n❌ 删除: /df_${f.id}`
-    ).join('\n\n');
+    const list = folders.map(f => `📁 ${escapeHtml(f.path)}`).join('\n\n');
     return `当前账号: ${escapeHtml(user)}\n常用目录列表：\n\n${list}`;
 }
 
@@ -239,10 +195,7 @@ function ptSubCard(sub, index) {
         missingLine +
         `   最后检查：${escapeHtml(lastCheck)}\n` +
         `   检查结果：${lastStatus}\n` +
-        `   Release 数：${sub.releaseCount || 0}\n` +
-        `   📝 详情：/pt_detail_${sub.id}\n` +
-        `   🔄 刷新：/pt_refresh_${sub.id}\n` +
-        `   📋 Releases：/pt_releases_${sub.id}`
+        `   Release 数：${sub.releaseCount || 0}`
     );
 }
 

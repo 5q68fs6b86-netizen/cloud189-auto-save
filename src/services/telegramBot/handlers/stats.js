@@ -3,6 +3,8 @@
  */
 const { send, typing } = require('../messaging');
 const { statsCard } = require('../templates');
+const { serializeCb } = require('../keyboards');
+const { CB } = require('../constants');
 const { friendlyError } = require('../errors');
 
 async function handleStats(svc, msg) {
@@ -39,7 +41,15 @@ async function handleStats(svc, msg) {
         });
 
         const text = statsCard(statusCounts, recentCount, failedTasks);
-        await send(svc.bot, chatId, text);
+        const keyboard = failedTasks.map(task => [{
+            text: `🔁 重试 ${String(task.resourceName || `任务 #${task.id}`).substring(0, 24)}`,
+            callback_data: serializeCb({ t: CB.TASK_RETRY, i: task.id }),
+        }]);
+        keyboard.push([{
+            text: '🔄 刷新统计',
+            callback_data: serializeCb({ t: CB.STATS_REFRESH }),
+        }]);
+        await send(svc.bot, chatId, text, { keyboard });
     } catch (error) {
         await send(svc.bot, chatId, friendlyError(error));
     }

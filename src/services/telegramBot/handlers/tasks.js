@@ -3,7 +3,7 @@
  */
 const { send, edit, typing, deleteMsg } = require('../messaging');
 const { taskCard, taskDetailCard, formatStatus } = require('../templates');
-const { paginationRow, serializeCb, taskActionRow } = require('../keyboards');
+const { paginationRow, serializeCb, taskActionRow, taskListKeyboard } = require('../keyboards');
 const { friendlyError } = require('../errors');
 const { CB, TASK_STATUS } = require('../constants');
 
@@ -43,14 +43,13 @@ async function handleTaskPage(svc, chatId, page = 1, messageId = null, status = 
 
     const totalPages = Math.max(1, Math.ceil(total / pageSize));
     const taskList = tasks.map(t => taskCard(t)).join('\n\n');
-    const keyboard = [];
     const title = getTaskListTitle(status);
 
     const pageRow = paginationRow(CB.TASK_PAGE, page, totalPages);
-    if (pageRow.length > 0) keyboard.push(pageRow);
+    const keyboard = taskListKeyboard(tasks, pageRow);
 
     const emptyTips = status
-        ? `📭 暂无${title}，可使用 /tasks 查看全部任务`
+        ? `📭 暂无${title}，可从主菜单点击“全部任务”查看`
         : '📭 暂无任务，可先发送 cloud.189.cn 分享链接创建任务';
     const message = tasks.length > 0
         ? `📋 ${title} (第${page}页，共${total}个)：\n\n${taskList}`
@@ -246,6 +245,14 @@ async function handleExecuteCb(svc, chatId, taskId, messageId) {
     await handleExecute(svc, { chat: { id: chatId } }, taskId);
 }
 
+async function handleStrmCb(svc, chatId, taskId) {
+    await handleStrm(svc, { chat: { id: chatId } }, taskId);
+}
+
+async function handleEmbyCb(svc, chatId, taskId) {
+    await handleEmby(svc, { chat: { id: chatId } }, taskId);
+}
+
 // ─── 创建任务（选择目录后的回调） ───
 async function handleCreateTask(svc, chatId, data, messageId) {
     const session = svc.sessionStore.get(chatId);
@@ -320,5 +327,7 @@ module.exports = {
     handleRetry,
     handleRetryCb,
     handleExecuteCb,
+    handleStrmCb,
+    handleEmbyCb,
     handleCreateTask,
 };
