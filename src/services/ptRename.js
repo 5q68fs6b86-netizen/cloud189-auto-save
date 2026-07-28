@@ -214,7 +214,8 @@ class PtRenameService {
             : (ConfigService.getConfigValue('openai.rename.template') || '{name} - {se}{ext}');
 
         // 标题与年份
-        const title = (aiBase && aiBase.name) || subscription.name || '未知';
+        // 目录和文件必须使用同一个标准标题，避免 TMDB 中文目录下混入 AI 提取的英文文件名。
+        const title = optionalLibraryInfo?.canonicalTitle || (aiBase && aiBase.name) || subscription.name || '未知';
         const year = (aiBase && Number(aiBase.year) > 0) ? Number(aiBase.year) : '';
         const resourceFolderName = optionalLibraryInfo?.resourceFolderName || (year ? `${title} (${year})` : title);
 
