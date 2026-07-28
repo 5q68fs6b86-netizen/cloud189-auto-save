@@ -3589,6 +3589,24 @@ AppDataSource.initialize().then(async () => {
         }
     });
 
+    app.post('/api/pt/sources/generate-filter-patterns', async (req, res) => {
+        try {
+            const result = await ptService.generateFilterPatterns(req.body || {});
+            res.json({ success: true, data: result });
+        } catch (error) {
+            res.json({ success: false, error: error.message });
+        }
+    });
+
+    app.post('/api/pt/sources/mikan/test', async (req, res) => {
+        try {
+            const result = await ptService.testMikanBaseUrl(String(req.body?.baseUrl || ''));
+            res.json({ success: true, data: result });
+        } catch (error) {
+            res.json({ success: false, error: error.message });
+        }
+    });
+
     app.post('/api/pt/downloader/test', async (req, res) => {
         try {
             const result = await ptService.testDownloader();

@@ -45,6 +45,7 @@ class ConfigService {
         tempFileTtl: 300               // 临时播放文件保留时间（秒）
       },
       pt: {
+        mikanBaseUrl: 'https://mikanani.kas.pub', // 蜜柑首选站点，失败时自动尝试内置镜像
         downloadRoot: '',              // qb 下载根目录（容器内可见路径）
         pollCron: '*/15 * * * *',      // RSS 拉取 cron
         globalExcludePattern: '',      // PT 全局排除正则（订阅可单独关闭）

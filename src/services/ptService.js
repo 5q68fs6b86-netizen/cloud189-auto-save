@@ -101,6 +101,64 @@ class PtService {
         return this.sourceService.getGroupItems(rssUrl, preset);
     }
 
+    async generateFilterPatterns({ name = '', requirement = '', titles = [] } = {}) {
+        const normalizedTitles = Array.isArray(titles)
+            ? titles.map(title => String(title || '').trim()).filter(Boolean).slice(0, 50)
+            : [];
+        if (!normalizedTitles.length) {
+            throw new Error('RSS 文件列表为空，无法生成正则');
+        }
+
+        const response = await aiService.chat([
+            {
+                role: 'system',
+                content: [
+                    '你是 PT/RSS 标题过滤正则生成器。根据订阅名称、用户要求和真实标题样本生成 JavaScript 正则。',
+                    '只返回 JSON：{"includePattern":"...","excludePattern":"...","explanation":"..."}。',
+                    '正则不要带 /.../ 包裹或 flags；使用兼容 JavaScript RegExp 的语法；不要使用全局 g 标志。',
+                    'includePattern 用于保留标题，excludePattern 用于排除标题；不需要的字段返回空字符串。',
+                    '优先生成短且可读的规则，不要把整条标题原样拼接。'
+                ].join('\n')
+            },
+            {
+                role: 'user',
+                content: `订阅名称：${String(name || '').trim() || '未命名'}\n用户要求：${String(requirement || '').trim() || '根据样本生成合理的过滤规则'}\n标题样本：\n${normalizedTitles.map((title, index) => `${index + 1}. ${title}`).join('\n')}`
+            }
+        ], { temperature: 0, max_tokens: 1000 });
+        if (!response.success) {
+            throw new Error(response.error || 'AI 生成失败');
+        }
+
+        const cleaned = String(response.data || '')
+            .replace(/```(?:json)?\s*|\s*```/gi, '')
+            .trim();
+        let parsed;
+        try {
+            parsed = JSON.parse(cleaned);
+        } catch {
+            throw new Error('AI 返回的正则格式无法解析');
+        }
+        const includePattern = String(parsed.includePattern || '').trim();
+        const excludePattern = String(parsed.excludePattern || '').trim();
+        for (const [label, pattern] of [['包含', includePattern], ['排除', excludePattern]]) {
+            if (!pattern) continue;
+            try {
+                new RegExp(pattern, 'i');
+            } catch (error) {
+                throw new Error(`AI 生成的${label}正则无效: ${error.message}`);
+            }
+        }
+        return {
+            includePattern,
+            excludePattern,
+            explanation: String(parsed.explanation || '').trim()
+        };
+    }
+
+    async testMikanBaseUrl(baseUrl) {
+        return this.sourceService.testMikanBaseUrl(baseUrl);
+    }
+
     // ==================== 轮询 ====================
 
     async runPoll(subscriptionId = null) {

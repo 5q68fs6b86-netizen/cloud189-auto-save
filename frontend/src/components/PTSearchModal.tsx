@@ -15,6 +15,7 @@ export interface PtSubscriptionPrefill {
   name: string;
   rssUrl: string;
   sourcePreset: string;
+  includePattern?: string;
 }
 
 interface SourcePreset {
@@ -160,12 +161,30 @@ const PTSearchModal: React.FC<PTSearchModalProps> = ({
   const handleSelectAnime = async (anime: any) => {
     const sourceKey: string = anime.source || selectedPreset;
     if (anime.directRss && anime.url) {
+      if (Array.isArray(anime.groups) && anime.groups.length > 0) {
+        setSelectedAnime(anime);
+        setGroups(anime.groups);
+        setStep('groups');
+        setError(null);
+        setPreviewIdx(null);
+        setPreviewItems([]);
+        return;
+      }
       onCreatePtSubscription({
         name: anime.title || defaultKeyword,
         rssUrl: anime.url,
         sourcePreset: sourceKey,
       });
       onClose();
+      return;
+    }
+    if (Array.isArray(anime.groups) && anime.groups.length > 0) {
+      setSelectedAnime(anime);
+      setGroups(anime.groups);
+      setStep('groups');
+      setError(null);
+      setPreviewIdx(null);
+      setPreviewItems([]);
       return;
     }
     setSelectedAnime(anime);
@@ -206,6 +225,7 @@ const PTSearchModal: React.FC<PTSearchModalProps> = ({
       name: groupName ? `${baseTitle} - ${groupName}`.trim() : baseTitle,
       rssUrl: group.rssUrl,
       sourcePreset: group.source || selectedAnime?.source || selectedPreset,
+      includePattern: group.includePattern || '',
     });
     onClose();
   };
@@ -241,7 +261,17 @@ const PTSearchModal: React.FC<PTSearchModalProps> = ({
         throw new Error(`服务返回非 JSON：${text.slice(0, 120)}`);
       }
       if (data?.success) {
-        setPreviewItems(Array.isArray(data.data) ? data.data : []);
+        const items = Array.isArray(data.data) ? data.data : [];
+        if (group.includePattern) {
+          try {
+            const matcher = new RegExp(group.includePattern, 'i');
+            setPreviewItems(items.filter((item: any) => matcher.test(item.title || item.rawTitle || '')));
+          } catch {
+            setPreviewItems(items);
+          }
+        } else {
+          setPreviewItems(items);
+        }
       } else {
         setPreviewItems([]);
       }
@@ -376,7 +406,7 @@ const PTSearchModal: React.FC<PTSearchModalProps> = ({
                         <span className={`text-[10px] px-1.5 py-0.5 rounded-full ${badgeCls}`}>{sourceLabel}</span>
                         {directRss && (
                           <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300">
-                            直 RSS
+                            {Array.isArray(r.groups) && r.groups.length > 0 ? '资源搜索' : '直 RSS'}
                           </span>
                         )}
                         {typeof r.itemCount === 'number' && r.itemCount > 0 && (
@@ -384,7 +414,7 @@ const PTSearchModal: React.FC<PTSearchModalProps> = ({
                             {r.itemCount} 个资源
                           </span>
                         )}
-                        {!directRss && Array.isArray(r.groups) && r.groups.length > 0 && (
+                        {Array.isArray(r.groups) && r.groups.length > 0 && (
                           <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-slate-200 text-slate-700 dark:bg-slate-700 dark:text-slate-200 font-medium">
                             {r.groups.length} 个字幕组
                           </span>
@@ -392,7 +422,7 @@ const PTSearchModal: React.FC<PTSearchModalProps> = ({
                       </div>
                       <div className="flex items-center gap-3 mt-1">
                         <span className="text-xs text-[#0b57d0] group-hover:underline">
-                          {directRss ? '点击直接创建订阅 →' : '点击选择字幕组 →'}
+                          {Array.isArray(r.groups) && r.groups.length > 0 ? '点击选择字幕组并预览文件 →' : directRss ? '点击使用搜索 RSS →' : '点击选择字幕组 →'}
                         </span>
                         {r.url && (
                           <a
@@ -406,6 +436,16 @@ const PTSearchModal: React.FC<PTSearchModalProps> = ({
                           </a>
                         )}
                       </div>
+                      {Array.isArray(r.preview) && r.preview.length > 0 && (
+                        <div className="mt-2 space-y-1 rounded-xl bg-white/70 dark:bg-slate-900/30 px-2.5 py-2">
+                          <div className="text-[10px] font-medium text-slate-500 dark:text-slate-400">实际搜索到的文件</div>
+                          {r.preview.slice(0, 3).map((title: string, previewIndex: number) => (
+                            <div key={previewIndex} className="text-[11px] text-slate-500 dark:text-slate-400 font-mono truncate" title={title}>
+                              · {title}
+                            </div>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   </button>
                 );
@@ -470,8 +510,13 @@ const PTSearchModal: React.FC<PTSearchModalProps> = ({
                       {isOpen ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
                     </button>
 
-                    {/* 使用 RSS 提示 */}
-                    <span className="flex-shrink-0 text-xs text-[#0b57d0]">使用此 RSS →</span>
+                    <button
+                      type="button"
+                      onClick={() => handleSelectGroup(g)}
+                      className="flex-shrink-0 px-3 py-1.5 rounded-full text-xs font-medium bg-[#0b57d0] text-white hover:bg-[#0b57d0]/90 transition-colors"
+                    >
+                      使用此 RSS
+                    </button>
                   </div>
 
                   {/* 文件预览列表 */}
@@ -524,7 +569,7 @@ const PTSearchModal: React.FC<PTSearchModalProps> = ({
 
         {step === 'search' && searched && results.length > 0 && (
           <div className="text-[11px] text-slate-400 dark:text-slate-500 px-1">
-            提示：「直 RSS」标记的会直接创建订阅；其它结果会进入字幕组选择步骤。
+            提示：「资源搜索」可继续选择字幕组并预览真实文件；没有字幕组时可直接使用搜索 RSS。
           </div>
         )}
       </div>

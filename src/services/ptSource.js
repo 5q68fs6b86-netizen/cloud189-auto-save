@@ -1,6 +1,7 @@
 const got = require('got');
 const { logTaskEvent } = require('../utils/logUtils');
 const ProxyUtil = require('../utils/ProxyUtil');
+const ConfigService = require('./ConfigService');
 const {
     applySubscriptionEpisodeRules,
     decodeHtmlEntities,
@@ -21,6 +22,44 @@ const {
 const DEFAULT_HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
 };
+
+const DEFAULT_MIKAN_BASE_URL = 'https://mikanani.kas.pub';
+const MIKAN_FALLBACK_URLS = [
+    DEFAULT_MIKAN_BASE_URL,
+    'https://mikanime.tv',
+    'https://mikan.sakuramoe.dev',
+    'https://mikan.tangbai.cc'
+];
+const KNOWN_MIKAN_HOSTS = new Set([
+    ...MIKAN_FALLBACK_URLS.map(url => new URL(url).host),
+    'mikanani.me'
+]);
+
+function escapeRegExp(value = '') {
+    return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function normalizeMikanBaseUrl(value = '') {
+    const input = String(value || '').trim() || DEFAULT_MIKAN_BASE_URL;
+    let parsed;
+    try {
+        parsed = new URL(input);
+    } catch {
+        throw new Error('Mikan 地址格式无效');
+    }
+    if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password) {
+        throw new Error('Mikan 地址必须是有效的 HTTP(S) 站点地址');
+    }
+    if (parsed.search || parsed.hash) {
+        throw new Error('Mikan 地址不能包含查询参数或片段');
+    }
+    return `${parsed.protocol}//${parsed.host}${parsed.pathname.replace(/\/+$/, '')}`;
+}
+
+function buildMikanBaseUrls(customUrl = '') {
+    const preferred = normalizeMikanBaseUrl(customUrl);
+    return [...new Set([preferred, ...MIKAN_FALLBACK_URLS])];
+}
 
 const PRESETS = {
     generic: {
@@ -44,8 +83,8 @@ const PRESETS = {
     mikan: {
         key: 'mikan',
         label: '蜜柑计划',
-        description: '从 mikanani.me 获取订阅 RSS，需在站点上复制对应番剧的 RSS 链接',
-        defaultRssUrl: 'https://mikanani.me/RSS/Bangumi'
+        description: '搜索番剧并选择字幕组即可自动生成 RSS，也支持在 PT 设置中自定义站点地址',
+        defaultRssUrl: `${DEFAULT_MIKAN_BASE_URL}/RSS/Bangumi`
     },
     anibt: {
         key: 'anibt',
@@ -62,6 +101,23 @@ const PRESETS = {
 };
 
 class PtSourceService {
+    getMikanBaseUrls(customUrl = null) {
+        const configured = customUrl == null
+            ? ConfigService.getConfigValue('pt.mikanBaseUrl', DEFAULT_MIKAN_BASE_URL)
+            : customUrl;
+        return buildMikanBaseUrls(configured);
+    }
+
+    async testMikanBaseUrl(baseUrl = '') {
+        const normalized = normalizeMikanBaseUrl(baseUrl);
+        const startedAt = Date.now();
+        const html = await this._fetch(`${normalized}/Home/Classic`, 'ptMikan', 12000);
+        if (!html || !/<html|<!doctype/i.test(html)) {
+            throw new Error('站点响应异常，未返回有效页面');
+        }
+        return { ok: true, baseUrl: normalized, elapsedMs: Date.now() - startedAt };
+    }
+
     getPresets() {
         return Object.values(PRESETS);
     }
@@ -87,13 +143,16 @@ class PtSourceService {
 
         for (const entry of feedEntries) {
             try {
-                const feedXml = await this._fetch(entry.url, proxyService, 30000);
-                const feedItems = this.parseFeedItems(feedXml, entry.url)
+                const feedResult = subscription.sourcePreset === 'mikan'
+                    ? await this._fetchMikanUrl(entry.url, 30000)
+                    : { body: await this._fetch(entry.url, proxyService, 30000), url: entry.url };
+                const feedXml = feedResult.body;
+                const feedItems = this.parseFeedItems(feedXml, feedResult.url)
                     .filter((item) => item.title)
                     .map((item) => applySubscriptionEpisodeRules(item, subscription, entry))
                     .map((item) => ({
                         ...item,
-                        sourceRssUrl: entry.url,
+                        sourceRssUrl: feedResult.url,
                         master: entry.master,
                         standbyLabel: entry.master ? '' : entry.label
                     }));
@@ -416,8 +475,10 @@ class PtSourceService {
 
     async getGroupItems(rssUrl, preset) {
         const proxyService = this.getProxyService(preset || 'generic');
-        const feedXml = await this._fetch(rssUrl, proxyService);
-        const items = this.parseFeedItems(feedXml, rssUrl);
+        const feedResult = preset === 'mikan'
+            ? await this._fetchMikanUrl(rssUrl)
+            : { body: await this._fetch(rssUrl, proxyService), url: rssUrl };
+        const items = this.parseFeedItems(feedResult.body, feedResult.url);
         return items.slice(0, 50).map(item => ({
             title: item.title,
             rawTitle: item.rawTitle || item.title,
@@ -447,7 +508,7 @@ class PtSourceService {
     // --- Mikan (HTML 爬取) ---
 
     async _searchMikan(keyword, externalSignal = null) {
-        const MIRRORS = ['https://mikan.tangbai.cc', 'https://mikanani.me'];
+        const MIRRORS = this.getMikanBaseUrls();
         const searchPath = `/Home/Search?searchstr=${encodeURIComponent(keyword)}`;
 
         // 尝试多个镜像，流式读取前 60KB 足以覆盖搜索结果
@@ -544,7 +605,7 @@ class PtSourceService {
     }
 
     async _getMikanGroups(bangumiUrlOrId) {
-        const MIRRORS = ['https://mikan.tangbai.cc', 'https://mikanani.me'];
+        const MIRRORS = this.getMikanBaseUrls();
         let bangumiId = String(bangumiUrlOrId || '');
         const idMatch = bangumiId.match(/(\d+)\/?$/);
         if (idMatch) bangumiId = idMatch[1];
@@ -587,6 +648,31 @@ class PtSourceService {
         }
 
         return groups;
+    }
+
+    async _fetchMikanUrl(inputUrl, timeoutMs = 30000, externalSignal = null) {
+        const rawUrl = String(inputUrl || '').trim();
+        let parsed;
+        try {
+            parsed = new URL(rawUrl);
+        } catch {
+            throw new Error('Mikan RSS 地址无效');
+        }
+        const configuredHosts = this.getMikanBaseUrls().map(url => new URL(url).host);
+        const canFailover = KNOWN_MIKAN_HOSTS.has(parsed.host) || configuredHosts.includes(parsed.host);
+        const candidates = canFailover
+            ? this.getMikanBaseUrls().map(base => `${base}${parsed.pathname}${parsed.search}`)
+            : [rawUrl];
+        let lastError = null;
+        for (const url of [...new Set(candidates)]) {
+            try {
+                return { body: await this._fetch(url, 'ptMikan', timeoutMs, externalSignal), url };
+            } catch (error) {
+                lastError = error;
+                if (externalSignal?.aborted) throw error;
+            }
+        }
+        throw lastError || new Error('Mikan 地址均不可用');
     }
 
     // --- AniBT (JSON API) ---
@@ -673,26 +759,43 @@ class PtSourceService {
 
     async _searchAnimeGarden(keyword, externalSignal = null) {
         const host = 'https://api.animes.garden';
-        const url = `${host}/subjects`;
-        const body = await this._fetchJSON(url, null, 'ptAnimegarden', 45000, externalSignal);
-        const subjects = body?.subjects || body?.data?.subjects || [];
-        const kw = (keyword || '').toLowerCase();
-        const results = [];
-        for (const s of subjects) {
-            const title = s.name || s.title || '';
-            // 同时匹配 name 和 keywords 数组（支持中/日/英文搜索）
-            const nameMatch = title.toLowerCase().includes(kw);
-            const keywordMatch = Array.isArray(s.keywords) && s.keywords.some(k => String(k).toLowerCase().includes(kw));
-            if (kw && !nameMatch && !keywordMatch) continue;
-            results.push({
-                id: String(s.id || ''),
-                title,
-                cover: '',
-                url: s.id ? `https://bgm.tv/subject/${s.id}` : '',
-                source: 'animegarden'
-            });
+        const rssUrl = `${host}/feed.xml?search=${encodeURIComponent(keyword)}`;
+        const body = await this._fetchJSON(
+            `${host}/resources`,
+            { search: keyword, pageSize: 200, duplicate: false },
+            'ptAnimegarden',
+            45000,
+            externalSignal
+        );
+        const resources = body?.resources || body?.data?.resources || [];
+        const publisherMap = new Map();
+        for (const resource of resources) {
+            const publisher = resource.publisher || resource.fansub || resource.group || {};
+            const name = publisher.name || publisher.title || '';
+            if (name) {
+                publisherMap.set(name, (publisherMap.get(name) || 0) + 1);
+            }
         }
-        return results;
+        const groups = [...publisherMap.entries()]
+            .sort((a, b) => b[1] - a[1])
+            .slice(0, 15)
+            .map(([name, count]) => ({
+                name,
+                rssUrl: `${rssUrl}&publisher=${encodeURIComponent(name)}`,
+                itemCount: count,
+                source: 'animegarden'
+            }));
+        return [{
+            id: 'animegarden-search',
+            title: `AnimeGarden 搜索: ${keyword}`,
+            cover: '',
+            url: rssUrl,
+            source: 'animegarden',
+            itemCount: resources.length,
+            preview: resources.slice(0, 5).map(resource => resource.title).filter(Boolean),
+            groups,
+            directRss: true
+        }];
     }
 
     async _getAnimeGardenGroups(subjectId) {
@@ -751,9 +854,10 @@ class PtSourceService {
                 .slice(0, 10)
                 .map(([name, count]) => ({
                     name,
-                    rssUrl: `https://nyaa.si/?page=rss&q=${encodeURIComponent(keyword + ' ' + name)}`,
+                    rssUrl: `https://nyaa.si/?page=rss&q=${encodeURIComponent(keyword)}`,
                     itemCount: count,
-                    source: 'nyaa'
+                    source: 'nyaa',
+                    includePattern: `^\\[${escapeRegExp(name)}\\]`
                 }));
         } catch (e) { if (externalSignal?.aborted) throw e; }
         return [{
@@ -786,18 +890,39 @@ class PtSourceService {
             for (const item of items) {
                 const name = item.author || item.subgroup || '';
                 if (name) {
-                    teamMap.set(name, (teamMap.get(name) || 0) + 1);
+                    const group = teamMap.get(name) || {
+                        count: 0,
+                        detailsUrl: item.detailsUrl || ''
+                    };
+                    group.count += 1;
+                    if (!group.detailsUrl && item.detailsUrl) {
+                        group.detailsUrl = item.detailsUrl;
+                    }
+                    teamMap.set(name, group);
                 }
             }
-            groups = [...teamMap.entries()]
-                .sort((a, b) => b[1] - a[1])
-                .slice(0, 15)
-                .map(([name, count]) => ({
-                    name,
-                    rssUrl: `https://share.dmhy.org/topics/rss/rss.xml?keyword=${encodeURIComponent(keyword + ' ' + name)}`,
-                    itemCount: count,
-                    source: 'dmhy'
+            const rankedGroups = [...teamMap.entries()]
+                .sort((a, b) => b[1].count - a[1].count)
+                .slice(0, 15);
+            const resolvedGroups = [];
+            // 动漫花园会主动断开大量并发详情请求，分批解析发布者 ID 更稳定。
+            for (let index = 0; index < rankedGroups.length; index += 5) {
+                const batch = rankedGroups.slice(index, index + 5);
+                const resolvedBatch = await Promise.all(batch.map(async ([name, group]) => {
+                    const publisherId = await this._getDmhyPublisherId(group.detailsUrl, externalSignal);
+                    if (!publisherId) {
+                        return null;
+                    }
+                    return {
+                        name,
+                        rssUrl: `https://share.dmhy.org/topics/rss/user_id/${publisherId}/rss/rss.xml?keyword=${encodeURIComponent(keyword)}`,
+                        itemCount: group.count,
+                        source: 'dmhy'
+                    };
                 }));
+                resolvedGroups.push(...resolvedBatch.filter(Boolean));
+            }
+            groups = resolvedGroups;
         } catch (e) { if (externalSignal?.aborted) throw e; }
         return [{
             id: 'dmhy-search',
@@ -810,6 +935,32 @@ class PtSourceService {
             groups,
             directRss: true
         }];
+    }
+
+    async _getDmhyPublisherId(detailsUrl, externalSignal = null) {
+        if (!detailsUrl) {
+            return '';
+        }
+        try {
+            const url = String(detailsUrl).replace(/^http:\/\/share\.dmhy\.org/i, 'https://share.dmhy.org');
+            for (let attempt = 0; attempt < 2; attempt += 1) {
+                try {
+                    const html = await this._fetch(url, 'ptDmhy', 7000, externalSignal);
+                    const match = String(html || '').match(/\/topics\/list\/user_id\/(\d+)/i);
+                    return match?.[1] || '';
+                } catch (error) {
+                    if (externalSignal?.aborted || attempt === 1) {
+                        throw error;
+                    }
+                }
+            }
+            return '';
+        } catch (error) {
+            if (externalSignal?.aborted) {
+                throw error;
+            }
+            return '';
+        }
     }
 
     // --- 通用 HTTP ---
@@ -907,4 +1058,11 @@ class PtSourceService {
     }
 }
 
-module.exports = { PtSourceService, PT_SOURCE_PRESETS: PRESETS };
+module.exports = {
+    PtSourceService,
+    PT_SOURCE_PRESETS: PRESETS,
+    DEFAULT_MIKAN_BASE_URL,
+    MIKAN_FALLBACK_URLS,
+    normalizeMikanBaseUrl,
+    buildMikanBaseUrls
+};
