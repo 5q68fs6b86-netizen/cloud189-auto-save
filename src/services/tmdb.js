@@ -10,6 +10,49 @@ const TMDB_CACHE_TTL = {
     DEFAULT: 12 * 60 * 60 * 1000
 };
 
+function normalizeMediaTitle(value = '') {
+    return String(value || '')
+        .normalize('NFKC')
+        .toLocaleLowerCase('zh-CN')
+        .replace(/[\s\p{P}\p{S}]+/gu, '');
+}
+
+function getMediaYear(media = {}) {
+    const date = media.release_date || media.first_air_date || media.releaseDate || '';
+    const matched = String(date).match(/^(\d{4})/);
+    return matched ? Number(matched[1]) : null;
+}
+
+function scoreSearchResult(media, title, year = '') {
+    const query = normalizeMediaTitle(title);
+    const localizedTitle = normalizeMediaTitle(media.title || media.name);
+    const originalTitle = normalizeMediaTitle(media.original_title || media.original_name);
+    let score = 0;
+
+    if (query && (localizedTitle === query || originalTitle === query)) {
+        score += 1000;
+    } else if (query && (localizedTitle.startsWith(query) || originalTitle.startsWith(query))) {
+        // A sequel or spin-off must not outrank an exact title match.
+        score += 100;
+    } else if (query && (localizedTitle.includes(query) || originalTitle.includes(query))) {
+        score += 50;
+    }
+
+    const expectedYear = Number(year);
+    const mediaYear = getMediaYear(media);
+    if (Number.isInteger(expectedYear) && expectedYear > 0 && mediaYear) {
+        score += mediaYear === expectedYear ? 200 : -Math.min(Math.abs(mediaYear - expectedYear), 50);
+    }
+
+    return score;
+}
+
+function rankSearchResults(results = [], title, year = '') {
+    return results
+        .map((media, index) => ({ media, index, score: scoreSearchResult(media, title, year) }))
+        .sort((a, b) => b.score - a.score || a.index - b.index);
+}
+
 class TMDBService {
     constructor() {
         this.apiKey = ConfigService.getConfigValue('tmdb.tmdbApiKey') || ConfigService.getConfigValue('tmdb.apiKey');
@@ -196,15 +239,11 @@ class TMDBService {
             return  null;
         }
 
-        // 按年份倒序排序
-        const sortedResults = response.results.sort((a, b) => {
-            const dateA = type === 'movie' ? a.release_date : a.first_air_date;
-            const dateB = type === 'movie' ? b.release_date : b.first_air_date;
-            return new Date(dateB) - new Date(dateA);
-        });
+        // TMDB 默认按相关度返回。先按标题和年份重排，避免旧作品被较新的衍生作挤出候选集。
+        const rankedResults = rankSearchResults(response.results, title, year);
+        const candidates = rankedResults.slice(0, 10);
 
-        // 获取前3个结果的详细信息
-        const detailPromises = sortedResults.slice(0, 3).map(async media => {
+        const detailPromises = candidates.map(async ({ media }) => {
             if (type === 'tv') {
                 return await this.getTVDetails(media.id);
             }
@@ -214,20 +253,9 @@ class TMDBService {
         const details = await Promise.all(detailPromises);
         
         // 分析最匹配的结果
-        const bestMatch = details.reduce((best, current) => {
+        const bestMatch = details.reduce((best, current, index) => {
             if (!current) return best;
-            let score = 0;
-            
-            // 1. 标题完全匹配加分
-            if (current.title.toLowerCase() === title.toLowerCase()) {
-                score += 10;
-            }
-            
-            // 2. 年份匹配加分
-            const mediaYear = new Date(current.releaseDate).getFullYear();
-            if (year && mediaYear === parseInt(year)) {
-                score += 5;
-            }
+            let score = candidates[index]?.score || 0;
             
             // 3. TV剧集特殊处理
             if (type === 'tv' && currentEpisodes > 0) {
@@ -252,6 +280,7 @@ class TMDBService {
         console.log(`最佳匹配结果: ${bestMatch?.title}, 分数: ${bestMatch?.score}`);
         
         console.log("根据TMDBID获取详情")
+        if (!bestMatch?.id) return null;
         if (type == 'tv') {
             return this.getTVDetails(bestMatch.id)
         }
@@ -432,4 +461,4 @@ class TMDBService {
     }
 }
 
-module.exports = { TMDBService };
+module.exports = { TMDBService, normalizeMediaTitle, rankSearchResults, scoreSearchResult };
