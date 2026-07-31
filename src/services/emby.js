@@ -130,7 +130,7 @@ class EmbyService {
         logTaskEvent(`执行Emby通知: ${taskName}`);
         // 处理路径
         this.embyPathReplace = task.account.embyPathReplace
-        const path = this._replacePath(task.realFolderName)
+        const path = this._resolveNotifyPath(task)
         const item = await this.searchItemsByPathRecursive(path);
         logTaskEvent(`Emby搜索结果: ${ JSON.stringify(item)}`);
         if (item) {
@@ -770,6 +770,13 @@ class EmbyService {
             // 移除额外的空格
             .trim();
     }
+    _resolveNotifyPath(task = {}) {
+        if (task.enableOrganizer && task.libraryLayout) {
+            const strmRoot = this._strmService.resolveTaskStrmRoot(task);
+            return `/strm/${String(strmRoot || '').replace(/^\/+/, '')}`.replace(/\/{2,}/g, '/');
+        }
+        return this._replacePath(task.realFolderName || '');
+    }
     // 路径替换
     _replacePath(path) {
         if (!path.startsWith('/')) {
@@ -783,7 +790,7 @@ class EmbyService {
             }
         }
         // 如果结尾有斜杠, 则移除
-        path = path.replace(/\/+$/, '');
+        path = path.replace(/\/{2,}/g, '/').replace(/\/+$/, '');
         return path;
     }
 

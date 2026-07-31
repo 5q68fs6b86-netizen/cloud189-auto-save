@@ -55,7 +55,12 @@ class OrganizerService {
             logTaskEvent(`任务[${task.resourceName}]为懒STRM，仅锁定媒体库布局（不移动网盘文件）`);
         }
 
-        const allFiles = (await this.taskService.getFilesByTask(task))
+        // 懒任务的目标目录尚未转存，实体文件在分享侧：从分享目录列文件，
+        // 否则 getFilesByTask 扫到空的目标目录会误报"没有可整理的文件"
+        const sourceFiles = isLazy
+            ? await this.taskService.getLazyStrmFilesByTask(task)
+            : await this.taskService.getFilesByTask(task);
+        const allFiles = sourceFiles
             .filter(file => !file.isFolder)
             .filter(file => !CasService.isCasFile(file.name))
             .filter(file => !CasArchiveService.isArchivePath(file.relativePath || file.relativeDir || ''));
@@ -82,6 +87,22 @@ class OrganizerService {
         // 锁定 layout（防 AI 漂移）
         const layoutJson = this.layoutService.serializeLibraryLayout(libraryInfo);
         task.libraryLayout = layoutJson;
+        let canonicalMetadata = {};
+        if (libraryInfo.tmdbId) {
+            const tmdbDetails = await this._fetchTmdbDetailsById(libraryInfo.tmdbId, libraryInfo.mediaType);
+            if (tmdbDetails?.id && tmdbDetails?.title) {
+                const tmdbType = tmdbDetails.type === 'movie' ? 'movie' : 'tv';
+                const tmdbYear = this._extractYear(tmdbDetails.releaseDate) || libraryInfo.year || '';
+                const canonicalTitle = this._sanitizePathSegment(tmdbDetails.title);
+                canonicalMetadata = {
+                    resourceName: tmdbYear ? `${canonicalTitle} (${tmdbYear})` : canonicalTitle,
+                    tmdbTitle: canonicalTitle,
+                    videoType: tmdbType,
+                    tmdbContent: JSON.stringify(tmdbDetails)
+                };
+            }
+        }
+        Object.assign(task, canonicalMetadata);
 
         if (!shouldOrganizeCloud) {
             if (this.taskRepo) {
@@ -89,6 +110,7 @@ class OrganizerService {
                     libraryLayout: layoutJson,
                     lastOrganizedAt: new Date(),
                     lastOrganizeError: '',
+                    ...canonicalMetadata,
                     ...(libraryInfo.tmdbId ? { tmdbId: String(libraryInfo.tmdbId) } : {})
                 });
             }
@@ -191,6 +213,7 @@ class OrganizerService {
             taskUpdates.tmdbId = String(libraryInfo.tmdbId);
             task.tmdbId = String(libraryInfo.tmdbId);
         }
+        Object.assign(taskUpdates, canonicalMetadata);
 
         await this.taskRepo.update(task.id, taskUpdates);
 

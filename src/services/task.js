@@ -172,6 +172,13 @@ class TaskService {
             ? Number(taskDto.tmdbSeasonEpisodes)
             : Number(taskDto.totalEpisodes || 0);
 
+        // 有 TMDB 标题时覆盖任务名（根任务保留 (根) 后缀）
+        let name = resourceName;
+        if (taskDto.tmdbTitle) {
+            const isRootTask = resourceName.endsWith('(根)');
+            name = isRootTask ? `${taskDto.tmdbTitle}(根)` : taskDto.tmdbTitle;
+        }
+
         return {
             accountId: taskDto.accountId,
             shareLink: taskDto.shareLink,
@@ -183,7 +190,7 @@ class TaskService {
             realFolderName:realFolder.name,
             status: 'pending',
             totalEpisodes: seasonTotalEpisodes,
-            resourceName,
+            resourceName: name,
             currentEpisodes,
             shareFileId: shareInfo.fileId,
             shareFolderId: shareFolderId || shareInfo.fileId,
@@ -197,6 +204,8 @@ class TaskService {
             remark: taskDto.remark,
             taskGroup: taskDto.taskGroup,
             tmdbId: taskDto.tmdbId,
+            tmdbTitle: taskDto.tmdbTitle,
+            videoType: taskDto.videoType,
             tmdbSeasonNumber: taskDto.tmdbSeasonNumber || null,
             tmdbSeasonName: taskDto.tmdbSeasonName || null,
             tmdbSeasonEpisodes: taskDto.tmdbSeasonEpisodes || null,
@@ -962,6 +971,15 @@ class TaskService {
         task.manualTmdbBound = true;
         task.manualSeason = Number.isInteger(manualSeason) && manualSeason > 0 ? manualSeason : null;
         task.tmdbContent = JSON.stringify(detail);
+        // 手动绑定后重建并锁定媒体库布局：否则此前误判（如电影被当成电视剧）
+        // 锁定的旧 libraryLayout 会在重新生成 STRM 时继续生效，导致分类/命名错误。
+        try {
+            const layoutService = new MediaLibraryLayoutService();
+            const libraryInfo = layoutService._composeLibraryInfo(task, {}, { ...detail, type: videoType });
+            task.libraryLayout = layoutService.serializeLibraryLayout(libraryInfo);
+        } catch (error) {
+            logTaskEvent(`[TMDB绑定] 重建媒体库布局失败: ${error.message}`, 'error', 'transfer');
+        }
         if (videoType === 'tv') {
             task.tmdbSeasonNumber = task.manualSeason;
             task.tmdbSeasonEpisodes = seasonEpisodes || Number(detail.totalEpisodes || 0);
@@ -1238,7 +1256,9 @@ class TaskService {
             const rootFolderInfo = await cloud189.listFiles(task.realRootFolderId);
             if (rootFolderInfo.res_code === "FileNotFound") {
                 // realRootFolderId 不存在或不可用，需要创建
-                const rootFolderName = task.resourceName.replace('(根)', '').trim();
+                // 从 realFolderName（云盘真实路径）取首段作为根目录名，
+                // 不要用 resourceName（已被 TMDB 标题覆盖）。
+                const rootFolderName = String(task.realFolderName || task.resourceName || '').replace('(根)', '').split('/')[0].trim();
                 logTaskEvent(`正在创建根目录: ${rootFolderName}`, 'info', 'transfer');
                 const rootFolder = await cloud189.createFolder(rootFolderName, task.targetFolderId);
                 if (!rootFolder?.id) throw new Error('创建根目录失败');
@@ -1977,8 +1997,10 @@ class TaskService {
             keepCasAfterRestore: task.keepCasAfterRestore
         };
 
-        // 如果原realFolderName和现realFolderName不一致 则需要删除原strm
-        if (updates.realFolderName && updates.realFolderName !== task.realFolderName && ConfigService.getConfigValue('strm.enable')) {
+        // 如果会影响 STRM 根路径的目录字段变化，则需要删除原 STRM
+        const realFolderChanged = updates.realFolderName && updates.realFolderName !== task.realFolderName;
+        const targetFolderChanged = updates.targetFolderName && updates.targetFolderName !== task.targetFolderName;
+        if ((realFolderChanged || targetFolderChanged) && ConfigService.getConfigValue('strm.enable')) {
             // 按旧 task 快照解析 STRM 根（与 organizer 清理逻辑一致）
             const strmService = new StrmService();
             const oldRoot = strmService.resolveTaskStrmRoot({

@@ -1521,6 +1521,7 @@ AppDataSource.initialize().then(async () => {
         if (search) {
             const searchConditions = [
                 { resourceName: Like(`%${search}%`) },
+                { tmdbTitle: Like(`%${search}%`) },
                 { shareFolderName: Like(`%${search}%`) },
                 { realFolderName: Like(`%${search}%`) },
                 { remark: Like(`%${search}%`) },
@@ -1644,6 +1645,7 @@ AppDataSource.initialize().then(async () => {
                 const normalizedSearch = search.toLowerCase();
                 tasks = tasks.filter(task => [
                     task.resourceName,
+                    task.tmdbTitle,
                     task.remark,
                     task.taskGroup,
                     task.account?.username,
