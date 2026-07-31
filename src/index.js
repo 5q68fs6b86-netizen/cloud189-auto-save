@@ -1521,6 +1521,7 @@ AppDataSource.initialize().then(async () => {
         if (search) {
             const searchConditions = [
                 { resourceName: Like(`%${search}%`) },
+                { tmdbTitle: Like(`%${search}%`) },
                 { shareFolderName: Like(`%${search}%`) },
                 { realFolderName: Like(`%${search}%`) },
                 { remark: Like(`%${search}%`) },
@@ -1644,6 +1645,7 @@ AppDataSource.initialize().then(async () => {
                 const normalizedSearch = search.toLowerCase();
                 tasks = tasks.filter(task => [
                     task.resourceName,
+                    task.tmdbTitle,
                     task.remark,
                     task.taskGroup,
                     task.account?.username,
@@ -1814,12 +1816,26 @@ AppDataSource.initialize().then(async () => {
         }
     });
 
+    app.get('/api/auto-series/sources', (req, res) => {
+        res.json({ success: true, data: autoSeriesService.getSourcePreferences() });
+    });
+
+    app.put('/api/auto-series/sources', (req, res) => {
+        try {
+            const data = autoSeriesService.saveSourcePreferences(req.body?.sources);
+            res.json({ success: true, data });
+        } catch (error) {
+            res.json({ success: false, error: error.message });
+        }
+    });
+
     // 手动模式：先搜索候选资源，由前端选择后再调用 /api/auto-series 创建
     app.get('/api/auto-series/search', async (req, res) => {
         try {
             const result = await autoSeriesService.searchResources({
                 title: req.query.title,
-                year: req.query.year
+                year: req.query.year,
+                sources: req.query.sources
             });
             res.json({ success: true, data: result });
         } catch (error) {

@@ -30,7 +30,12 @@ class ConfigService {
           targetFolder: '',
           organizerTargetFolderId: '',
           organizerTargetFolderName: '',
-          mode: 'lazy'
+          mode: 'lazy',
+          sourcePreferences: [
+            { source: 'cloudsaver', enabled: true },
+            { source: 'hdhive', enabled: true },
+            { source: 'pt', enabled: true }
+          ]
         }
       },
       // CAS 配置（已迁移到独立配置节点，保留 task 部分用于兼容）

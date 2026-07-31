@@ -17,6 +17,7 @@ const {
     joinLocalStrmPath
 } = require('./mediaLibraryLayout');
 const { TMDBService } = require('./tmdb');
+const { AppDataSource } = require('../database');
 
 class LazyShareStrmService {
     constructor(accountRepo, taskService) {
@@ -38,6 +39,7 @@ class LazyShareStrmService {
         this.casMetadataInflight = new Map();
         this.casMetadataPrewarmInflight = new Map();
         this.casMetadataFolderCache = new Map();
+        this.followedShareUsers = new Set();
         this.cacheTtlMs = 60 * 1000;
     }
 
@@ -100,6 +102,8 @@ class LazyShareStrmService {
                 shareMode: shareData.shareInfo.shareMode,
                 fileId: file.id,
                 fileName: file.sourceFileName || file.name,
+                sourceMd5: file.sourceMd5 || file.md5 || '',
+                sourceSize: file.sourceSize || file.size || 0,
                 targetFolderId,
                 rootName,
                 relativeDir: file.sourceRelativeDir || '',
@@ -133,7 +137,6 @@ class LazyShareStrmService {
         const accountId = Number(task.accountId || task.account?.id);
         const targetFolderId = String(task.realFolderId || '').trim();
         const shareId = String(task.shareId || '').trim();
-        const localPathPrefix = this._getTaskLocalPath(task);
 
         if (!accountId) {
             throw new Error('任务缺少账号信息');
@@ -144,7 +147,16 @@ class LazyShareStrmService {
         if (!shareId) {
             throw new Error('任务缺少分享信息');
         }
-        if (!localPathPrefix) {
+        if (!task.account) {
+            task.account = await this.accountRepo.findOneBy({ id: accountId });
+        }
+        const localPathPrefix = this._getTaskLocalPath(task);
+        // 整理器模式：账号前缀为裸 /strm 时规范化为空（落到物理根）是合法值，
+        // 仅当账号完全没配前缀才算缺目录
+        const missingLocalPath = task.enableOrganizer
+            ? !String(task.account?.localStrmPrefix || '').trim()
+            : !localPathPrefix;
+        if (missingLocalPath) {
             throw new Error('任务缺少STRM目录');
         }
 
@@ -153,7 +165,9 @@ class LazyShareStrmService {
                 id: String(file.id),
                 name: file.name,
                 // 保留真实 relativeDir，不再强制清空
-                relativeDir: file.relativeDir || ''
+                relativeDir: file.relativeDir || '',
+                md5: file.md5 || file.fileMd5 || '',
+                size: file.size || file.fileSize || 0
             }))
         );
         if (!mediaEntries.length) {
@@ -176,6 +190,8 @@ class LazyShareStrmService {
                             entry.name = hit.name || entry.name;
                             entry.relativeDir = hit.relativeDir || entry.relativeDir || '';
                             entry.originalFileName = hit.originalFileName || hit.name || entry.name;
+                            entry.md5 = entry.md5 || hit.md5 || hit.fileMd5 || '';
+                            entry.size = entry.size || hit.size || hit.fileSize || 0;
                         }
                     }
                     if (organizedTask.libraryInfo) {
@@ -206,6 +222,8 @@ class LazyShareStrmService {
                 shareMode: task.shareMode,
                 fileId: file.id,
                 fileName: file.sourceFileName || file.name,
+                sourceMd5: file.sourceMd5 || file.md5 || '',
+                sourceSize: file.sourceSize || file.size || 0,
                 targetFolderId,
                 rootName: '',
                 relativeDir: file.sourceRelativeDir || file.relativeDir || '',
@@ -256,10 +274,9 @@ class LazyShareStrmService {
 
         const cloud189 = Cloud189Service.getInstance(account);
         const targetFolderId = await this._resolveTransferTargetFolder(cloud189, payload);
-        const expectedFileName = payload.isCas
-            ? (payload.originalFileName || CasService.getOriginalFileName(payload.fileName))
-            : payload.fileName;
-        let targetFile = await this._findFileByName(cloud189, targetFolderId, expectedFileName);
+        let targetFile = payload.isCas
+            ? await this._findFileByName(cloud189, targetFolderId, payload.originalFileName || CasService.getOriginalFileName(payload.fileName))
+            : await this._findTransferredFile(cloud189, targetFolderId, payload);
 
         if (!targetFile) {
             targetFile = await this._ensureTransferredFile(cloud189, payload, targetFolderId);
@@ -342,7 +359,9 @@ class LazyShareStrmService {
             return [{
                 id: String(shareInfo.fileId),
                 name: shareInfo.fileName,
-                relativeDir: ''
+                relativeDir: '',
+                md5: shareInfo.md5 || shareInfo.fileMd5 || '',
+                size: shareInfo.size || shareInfo.fileSize || 0
             }];
         }
 
@@ -374,7 +393,9 @@ class LazyShareStrmService {
             result.push({
                 id: String(file.id),
                 name: file.name,
-                relativeDir
+                relativeDir,
+                md5: file.md5 || file.fileMd5 || '',
+                size: file.size || file.fileSize || 0
             });
         }
 
@@ -659,6 +680,59 @@ class LazyShareStrmService {
         return files.find((file) => file.name === fileName) || null;
     }
 
+    /**
+     * 在目标目录查找已转存文件（一次列目录，多候选兜底）：
+     * 新 token 优先使用源文件 MD5/大小指纹；历史 token 才使用文件名兼容。
+     */
+    async _findTransferredFile(cloud189, folderId, payload = {}) {
+        const folderInfo = await cloud189.listFiles(folderId);
+        const files = folderInfo?.fileListAO?.fileList || [];
+
+        const sourceMd5 = String(payload.sourceMd5 || payload.md5 || '').trim().toUpperCase();
+        const sourceSize = Number(payload.sourceSize || payload.size || 0) || 0;
+        if (sourceMd5) {
+            const md5Matches = files.filter((file) => {
+                const fileMd5 = String(file.md5 || file.fileMd5 || '').trim().toUpperCase();
+                return fileMd5 === sourceMd5;
+            });
+            const fingerprintMatches = sourceSize
+                ? md5Matches.filter((file) => Number(file.size || file.fileSize || 0) === sourceSize)
+                : md5Matches;
+            if (fingerprintMatches.length === 1) {
+                return fingerprintMatches[0];
+            }
+            if (fingerprintMatches.length > 1) {
+                const candidateNames = [payload.originalFileName, payload.fileName]
+                    .map((name) => String(name || '').trim())
+                    .filter(Boolean);
+                for (const name of candidateNames) {
+                    const namedMatches = fingerprintMatches.filter((file) => file.name === name);
+                    if (namedMatches.length === 1) {
+                        return namedMatches[0];
+                    }
+                }
+                // 内容完全相同，任一文件均可安全播放；按目标 UFID 确定性选择避免重复提交。
+                return [...fingerprintMatches].sort((left, right) =>
+                    String(left.id || left.fileId || '').localeCompare(String(right.id || right.fileId || ''))
+                )[0];
+            }
+            // 已有源指纹时禁止退回文件名，避免同名文件被误当成目标文件。
+            return null;
+        }
+
+        // 旧 STRM 没有指纹时保留文件名兼容逻辑。
+        const candidateNames = [payload.fileName, payload.originalFileName]
+            .map((name) => String(name || '').trim())
+            .filter((name, index, arr) => name && arr.indexOf(name) === index);
+        for (const name of candidateNames) {
+            const hit = files.find((file) => file.name === name);
+            if (hit) {
+                return hit;
+            }
+        }
+        return null;
+    }
+
     _getTransferKey(payload, targetFolderId) {
         return [payload.accountId, payload.shareId, payload.fileId, targetFolderId, payload.fileName].join(':');
     }
@@ -743,6 +817,15 @@ class LazyShareStrmService {
         }
 
         const pending = (async () => {
+            // 提交转存前先兜底查一次：整理器重命名后 fileName 与网盘落盘名（分享原名）不一致，
+            // 文件可能早已转好，避免重复提交被云端去重后空转轮询
+            const existing = await this._findTransferredFile(cloud189, targetFolderId, payload);
+            if (existing) {
+                return payload.isCas
+                    ? await this._restoreCasTransferredFile(cloud189, targetFolderId, existing, payload)
+                    : existing;
+            }
+
             if (payload.isCas) {
                 const cachedCasInfo = await this._getCachedCasMetadata(payload);
                 if (cachedCasInfo) {
@@ -756,7 +839,7 @@ class LazyShareStrmService {
             }
 
             const submitResult = await this._submitShareSaveTask(cloud189, payload, targetFolderId);
-            const transferredFile = await this._waitForTransferredFile(cloud189, targetFolderId, payload.fileName, submitResult);
+            const transferredFile = await this._waitForTransferredFile(cloud189, targetFolderId, payload.fileName, submitResult, 120, 1000, payload);
             if (!payload.isCas) {
                 return transferredFile;
             }
@@ -794,13 +877,17 @@ class LazyShareStrmService {
         return restoredFile;
     }
 
-    async _waitForTransferredFile(cloud189, targetFolderId, fileName, submitResult = {}, maxAttempts = 120, intervalMs = 1000) {
+    async _waitForTransferredFile(cloud189, targetFolderId, fileName, submitResult = {}, maxAttempts = 120, intervalMs = 1000, payload = null) {
         const totalAttempts = submitResult.canTrackTask === false ? 15 : maxAttempts;
         let lastTaskStatus = null;
         for (let index = 0; index < totalAttempts; index++) {
-            const file = await this._findFileByName(cloud189, targetFolderId, fileName);
+            // 传了 payload 时按源文件指纹查找，旧 token 再按文件名兼容，
+            // 否则（CAS 还原等场景）按精确目标名单名查找
+            const file = payload
+                ? await this._findTransferredFile(cloud189, targetFolderId, payload)
+                : await this._findFileByName(cloud189, targetFolderId, fileName);
             if (file) {
-                logTaskEvent(`懒转存完成: ${fileName}`);
+                logTaskEvent(`懒转存完成: ${file.name || fileName}`);
                 return file;
             }
 
@@ -990,8 +1077,47 @@ class LazyShareStrmService {
         return taskStatus;
     }
 
+    /**
+     * shareMode=5 订阅分享转存前必须先关注分享者，否则云端返回 PermissionDenied。
+     * 分享者 uuid 通过 shareId → subscription_resource → subscription.uuid 关联取得。
+     * 已关注则跳过；查不到 uuid 时静默跳过（不影响普通分享）。
+     */
+    async _ensureShareUserFollowed(cloud189, shareId, fileName = '') {
+        if (this.followedShareUsers?.has(String(shareId))) {
+            return;
+        }
+        try {
+            if (!AppDataSource.isInitialized) {
+                return;
+            }
+            const resourceRepo = AppDataSource.getRepository('SubscriptionResource');
+            const resource = await resourceRepo.findOne({
+                where: { shareId: String(shareId) },
+                relations: { subscription: true }
+            });
+            const ownerUuid = resource?.subscription?.uuid;
+            if (!ownerUuid) {
+                return;
+            }
+            const alreadyFollowed = await cloud189.isFollowedShareUser(ownerUuid);
+            if (alreadyFollowed) {
+                this.followedShareUsers?.add(String(shareId));
+                return;
+            }
+            await cloud189.followShareUser(ownerUuid);
+            this.followedShareUsers?.add(String(shareId));
+            logTaskEvent(`懒转存已自动关注订阅分享者: ${ownerUuid}${fileName ? ` (${fileName})` : ''}`);
+        } catch (error) {
+            logTaskEvent(`懒转存关注订阅分享者失败: ${error.message}`, 'warn', 'transfer');
+        }
+    }
+
     async _submitShareSaveTask(cloud189, payload, targetFolderId) {
         logTaskEvent(`懒转存开始: ${payload.fileName}`);
+        // shareMode=5 是订阅分享：转存前必须先关注（订阅）分享者，否则云端返回 PermissionDenied
+        if (payload.shareMode == 5) {
+            await this._ensureShareUserFollowed(cloud189, payload.shareId, payload.fileName);
+        }
         const batchTaskDto = new BatchTaskDto({
             taskInfos: JSON.stringify([{
                 fileId: payload.fileId,

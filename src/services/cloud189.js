@@ -805,21 +805,76 @@ class Cloud189Service {
                 dt: 1
             },
         })
-        if (!response || response.res_code != 0) {
-            throw new Error(response.res_msg)
-        }
-        const code = response.normal.code
-        if (code != 1) {
-            throw new Error(response.normal.message)
-        }
-        const url = response.normal.url
-        const res = await got(url, {
-            followRedirect: false,
-            headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36 Edg/119.0.0.0'
+        // VLC 播放接口的错误信息在 res_message（不是 res_msg）；
+        // 仅 mediaType=3（已识别为视频）的文件可用，mediaType=0 的大文件会被拒
+        // （PermissionDenied: file type error or not support）。
+        if (response && response.res_code == 0 && response.normal?.code == 1) {
+            const url = response.normal.url
+            const res = await got(url, {
+                followRedirect: false,
+                headers: {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36 Edg/119.0.0.0'
+                }
+            })
+            if (res.headers.location) {
+                return res.headers.location
             }
-        })
-        return res.headers.location
+        }
+        const vlcError = response?.normal?.message
+            || response?.res_message
+            || response?.res_msg
+            || '获取播放直链失败';
+
+        // 回退1：fileStr 通用下载链接（不受 mediaType/文件大小限制，覆盖未识别的大文件）
+        const fileStrUrl = await this._getFileStrDownloadUrl(fileId);
+        if (fileStrUrl) {
+            return fileStrUrl;
+        }
+
+        // 回退2：open API 下载接口（仅小文件，大文件返回 FileTooLarge）
+        const fallbackUrl = await this.getFileDownloadUrl(fileId);
+        if (fallbackUrl) {
+            const res = await got(String(fallbackUrl).replace('http://', 'https://'), {
+                followRedirect: false,
+                headers: {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36 Edg/119.0.0.0'
+                }
+            });
+            return res.headers.location || fallbackUrl;
+        }
+        throw new Error(vlcError);
+    }
+
+    /**
+     * 通过 portal getFileInfo 返回的 fileStr 链接获取直链。
+     * 该链接不受 mediaType/文件大小限制，是 mediaType=0（未识别为视频）大文件的唯一可用下载路径。
+     * 需要 sessionKey 鉴权，跟随 302 得到真实直链。
+     */
+    async _getFileStrDownloadUrl(fileId) {
+        try {
+            const info = await this.request('/api/portal/getFileInfo.action', {
+                method: 'GET',
+                searchParams: { fileId }
+            });
+            const downloadUrl = info?.downloadUrl;
+            if (!downloadUrl) {
+                return null;
+            }
+            const sessionKey = await this.getSessionKeyForUpload();
+            const base = String(downloadUrl).replace(/^\/\//, 'https://');
+            const url = base + (base.includes('?') ? '&' : '?') + 'sessionKey=' + encodeURIComponent(sessionKey);
+            const res = await got(url, {
+                followRedirect: false,
+                headers: {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36 Edg/119.0.0.0',
+                    'Referer': 'https://cloud.189.cn/'
+                }
+            });
+            return res.headers.location || null;
+        } catch (error) {
+            logTaskEvent(`fileStr 直链获取失败: ${error.message}`, 'warn', 'transfer');
+            return null;
+        }
     }
     // 获取 sessionKey（用于 upload 域名的加密请求）
     async getSessionKeyForUpload() {
@@ -845,6 +900,40 @@ class Cloud189Service {
             pkId: resp.pkId,
             expire: resp.expire || 0
         };
+    }
+
+    // 检查是否已关注（订阅）某个分享者。data=1 已关注，data=0 未关注。
+    async isFollowedShareUser(followUserId) {
+        const resp = await this.request('/api/open/subscribe/isFolloweUser.action', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            json: {
+                userId: '',
+                followUserId: String(followUserId || ''),
+                typeList: [1, 2]
+            }
+        });
+        return Number(resp?.data) === 1;
+    }
+
+    // 关注（订阅）分享者。shareMode=5 的订阅分享转存前必须先关注分享者，否则返回 PermissionDenied。
+    async followShareUser(targetUserId) {
+        const resp = await this.request('/api/open/subscribe/doRelate.action', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            json: {
+                mark: 1,
+                type: 2,
+                applyType: '',
+                targetUserId: String(targetUserId || '')
+            }
+        });
+        // doRelate 成功返回 {"code":"0","msg":"success"}；已关注时也可能返回成功
+        const ok = resp && (String(resp.code) === '0' || Number(resp.res_code) === 0);
+        if (!ok) {
+            throw new Error(resp?.msg || resp?.res_message || resp?.res_msg || '关注分享者失败');
+        }
+        return true;
     }
 
     // 获取文件下载URL（用于下载 .cas 文件内容）

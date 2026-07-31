@@ -21,6 +21,10 @@ interface CloudResource {
     messageId: string;
     title: string;
     cloudLinks: CloudLink[];
+    topicId?: string;
+    hasLinks?: boolean;
+    content?: string;
+    pubDate?: string;
 }
 
 interface SearchResponse {
@@ -209,9 +213,9 @@ class CloudSaverSDK {
             if (data.success && data.code === 0) {
                 const resources = data.data
                 .flatMap(item => item.list)
-                .filter(item => 
-                    item.cloudLinks?.length > 0 && 
-                    item.cloudLinks.some(link => 
+                .filter(item =>
+                    item.cloudLinks?.length > 0 &&
+                    item.cloudLinks.some(link =>
                         link.link.includes('cloud.189.cn')
                     )
                 );
@@ -222,6 +226,74 @@ class CloudSaverSDK {
             return [];
         } catch (error) {
             throw error;
+        }
+    }
+
+    /**
+     * 列表模式: 返回全部结果(含无链接的)
+     */
+    async searchList(keyword: string): Promise<CloudResource[]> {
+        if (!this.token) {
+            const loginSuccess = await this.autoLogin();
+            if (!loginSuccess) {
+                throw new Error('CloudSaverSDK 自动登录失败');
+            }
+        }
+        try {
+            const { body, statusCode } = await got.get(`${this.baseUrl}/api/search`, {
+                searchParams: { keyword, mode: 'list' },
+                headers: { 'Authorization': `Bearer ${this.token}` },
+                responseType: 'json',
+                timeout: 30000,
+                throwHttpErrors: false
+            });
+
+            if (statusCode === 401) {
+                const loginSuccess = await this.autoLogin();
+                if (!loginSuccess) throw new Error('token 已过期，自动登录失败');
+                return this.searchList(keyword);
+            }
+
+            const data = body as SearchResponse;
+            if (data.success && data.code === 0) {
+                return data.data.flatMap(item => item.list);
+            }
+            return [];
+        } catch (error) {
+            throw error;
+        }
+    }
+
+    /**
+     * 按需详情: 拿单帖链接
+     */
+    async getDetail(topicId: string): Promise<CloudResource | null> {
+        if (!this.token) {
+            const loginSuccess = await this.autoLogin();
+            if (!loginSuccess) throw new Error('CloudSaverSDK 自动登录失败');
+        }
+        try {
+            const { body, statusCode } = await got.get(`${this.baseUrl}/api/detail`, {
+                searchParams: { topicId },
+                headers: { 'Authorization': `Bearer ${this.token}` },
+                responseType: 'json',
+                timeout: 30000,
+                throwHttpErrors: false
+            });
+
+            if (statusCode === 401) {
+                const loginSuccess = await this.autoLogin();
+                if (!loginSuccess) throw new Error('token 已过期，自动登录失败');
+                return this.getDetail(topicId);
+            }
+
+            const data = body as any;
+            if (data.success && data.code === 0 && data.data) {
+                return data.data as CloudResource;
+            }
+            return null;
+        } catch (error) {
+            return null;
         }
     }
 

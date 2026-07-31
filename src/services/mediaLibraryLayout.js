@@ -466,13 +466,89 @@ class MediaLibraryLayoutService {
                 ...file,
                 name: newName,
                 relativeDir,
-                organizedDir: joinPosix(info.categoryName, info.resourceFolderName, relativeDir),
-                organizedFileName: relativeDir ? path.posix.join(relativeDir, newName.replace(/\.[^.]+$/, '') + '.strm').replace(/\.strm$/, path.extname(newName) ? newName.replace(/\.[^.]+$/, '.strm') : `${newName}.strm`) : null,
                 sourceFileName: file.sourceFileName || file.name || file.restoreName,
                 originalFileName: file.originalFileName || file.restoreName || file.name
             };
         });
+        // 电影多版本（如 标准版/HDR10/杜比视界）会映射到同一目标名，导致 STRM 互相覆盖、
+        // 最终只保留一个。这里按目标路径分组，对冲突项追加从原始文件名提取的版本标识以消歧。
+        this._disambiguateCollidingNames(out);
+        for (const file of out) {
+            const relativeDir = file.relativeDir || '';
+            file.organizedDir = joinPosix(info.categoryName, info.resourceFolderName, relativeDir);
+            file.organizedFileName = relativeDir
+                ? path.posix.join(relativeDir, file.name.replace(/\.[^.]+$/, '') + '.strm')
+                : null;
+        }
         return { targetRoot, files: out, libraryInfo: info };
+    }
+
+    /**
+     * 检测映射到同一目标 STRM 路径的文件（同目录 + 同主名），为冲突项追加版本标识。
+     * 第一个保持原名，其余追加从原始文件名提取的版本标签；标签重复时退化为「版本N」。
+     */
+    _disambiguateCollidingNames(files) {
+        const groups = new Map();
+        for (const file of files) {
+            const base = path.parse(file.name || '').name;
+            const key = `${normalizeRelativePath(file.relativeDir || '')}/${base}`;
+            if (!groups.has(key)) {
+                groups.set(key, []);
+            }
+            groups.get(key).push(file);
+        }
+        for (const group of groups.values()) {
+            if (group.length < 2) {
+                continue;
+            }
+            const usedTags = new Set();
+            group.forEach((file, index) => {
+                if (index === 0) {
+                    return;
+                }
+                let tag = this._extractVersionTag(file.originalFileName || file.sourceFileName || file.name);
+                if (!tag || usedTags.has(tag)) {
+                    let n = 1;
+                    while (usedTags.has(`版本${n}`)) {
+                        n++;
+                    }
+                    tag = `版本${n}`;
+                }
+                usedTags.add(tag);
+                const parsed = path.parse(file.name);
+                file.name = `${parsed.name} - ${tag}${parsed.ext}`;
+            });
+        }
+    }
+
+    /**
+     * 从原始文件名提取可区分的版本/画质标识（杜比视界、HDR10、REMUX、分辨率等）。
+     */
+    _extractVersionTag(sourceName = '') {
+        const name = String(sourceName || '');
+        if (!name) {
+            return '';
+        }
+        const patterns = [
+            [/杜比视界|Dolby\s*Vision|(?<![A-Za-z])DV(?![A-Za-z])/i, '杜比视界'],
+            [/\bHDR10\+?/i, 'HDR10'],
+            [/\bHDR\b/i, 'HDR'],
+            [/\bREMUX\b/i, 'REMUX'],
+            [/\bBlu-?Ray\b|\bBD\b/i, 'BluRay'],
+            [/\bWEB-?DL\b/i, 'WEB-DL'],
+            [/\bWEBRip\b/i, 'WEBRip'],
+            [/\b2160p\b|\b4K\b|\bUHD\b/i, '2160p'],
+            [/\b1080p\b/i, '1080p'],
+            [/\b720p\b/i, '720p'],
+            [/60\s*FPS/i, '60FPS'],
+        ];
+        const tags = [];
+        for (const [regex, label] of patterns) {
+            if (regex.test(name)) {
+                tags.push(label);
+            }
+        }
+        return tags.slice(0, 2).join(' ');
     }
 
     /**

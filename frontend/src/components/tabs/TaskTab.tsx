@@ -21,6 +21,7 @@ interface Task {
   taskGroup?: string;
   shareLink: string;
   targetFolderId: string;
+  targetFolderName?: string;
   realFolderName?: string;
   realFolderId?: string;
   currentEpisodes: number;
@@ -302,11 +303,11 @@ const TaskTab: React.FC<TaskTabProps> = ({ onCreateTask }) => {
       accountId: String(task.account.id),
       shareLink: task.shareLink,
       accessCode: '',
-      taskName: task.resourceName,
+      taskName: task.tmdbTitle || task.resourceName,
       totalEpisodes: task.totalEpisodes !== null && task.totalEpisodes !== undefined && task.totalEpisodes > 0 ? String(task.totalEpisodes) : '',
       currentEpisodes: String(task.currentEpisodes || 0),
-      targetFolderId: task.realFolderId || task.targetFolderId,
-      targetFolder: task.realFolderName || '',
+      targetFolderId: task.targetFolderId,
+      targetFolder: task.targetFolderName || '',
       shareFolderId: task.shareFolderId || '',
       shareFolderName: task.shareFolderName || '',
       taskGroup: task.taskGroup || '',
@@ -317,6 +318,8 @@ const TaskTab: React.FC<TaskTabProps> = ({ onCreateTask }) => {
       sourceRegex: task.sourceRegex || '',
       targetRegex: task.targetRegex || '',
       tmdbId: task.tmdbId || '',
+      tmdbTitle: task.tmdbTitle || '',
+      videoType: task.videoType || '',
       status: task.status,
       cronExpression: task.cronExpression || '',
       enableTaskScraper: Boolean(task.enableTaskScraper),
@@ -874,7 +877,8 @@ const TaskTab: React.FC<TaskTabProps> = ({ onCreateTask }) => {
       <div className="grid grid-cols-1 gap-4">
         {Array.isArray(filteredTasks) && filteredTasks.map(task => {
           if (!task) return null;
-          const taskName = task.shareFolderName ? `${task.resourceName}/${task.shareFolderName}` : (task.resourceName || 'Unknown Resource');
+          const taskName = task.tmdbTitle || (task.shareFolderName ? `${task.resourceName}/${task.shareFolderName}` : (task.resourceName || 'Unknown Resource'));
+          const originName = task.tmdbTitle && task.shareFolderName ? `${task.resourceName}/${task.shareFolderName}` : (task.tmdbTitle ? task.resourceName : '');
           const progress = (task.totalEpisodes && task.totalEpisodes > 0) ? (task.currentEpisodes / task.totalEpisodes) * 100 : 0;
           const isSelected = selectedTaskIds.includes(task.id);
           const isExecuting = executingTaskIds.includes(task.id);
@@ -910,7 +914,7 @@ const TaskTab: React.FC<TaskTabProps> = ({ onCreateTask }) => {
                   </div>
                   <div>
                     <div className="flex flex-wrap items-center gap-2">
-                      <h3 className="font-bold ui-title text-lg truncate max-w-[300px]" title={taskName}>{taskName}</h3>
+                      <h3 className="font-bold ui-title text-lg truncate max-w-[300px]" title={originName ? `${taskName}\n原始名称：${originName}` : taskName}>{taskName}</h3>
                       {getStatusBadge(task.status)}
                       {task.enableLazyStrm && <span className="px-2 py-0.5 bg-amber-100 text-amber-700 rounded text-[10px] font-bold">懒STRM</span>}
                       {task.enableCron && <span className="px-2 py-0.5 bg-violet-100 text-violet-700 rounded text-[10px] font-bold">定时任务</span>}

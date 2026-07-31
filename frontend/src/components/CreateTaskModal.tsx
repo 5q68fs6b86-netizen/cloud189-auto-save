@@ -43,6 +43,8 @@ interface TaskInitialData {
   sourceRegex?: string;
   targetRegex?: string;
   tmdbId?: string | number | null;
+  tmdbTitle?: string;
+  videoType?: 'movie' | 'tv' | '';
   enableTaskScraper?: boolean;
   enableLazyStrm?: boolean;
   enableOrganizer?: boolean;
@@ -79,6 +81,8 @@ interface TaskFormData {
   sourceRegex: string;
   targetRegex: string;
   tmdbId: string;
+  tmdbTitle: string;
+  videoType: 'movie' | 'tv' | '';
   enableTaskScraper: boolean;
   enableLazyStrm: boolean;
   enableOrganizer: boolean;
@@ -123,6 +127,8 @@ const EMPTY_FORM_DATA: TaskFormData = {
   sourceRegex: '',
   targetRegex: '',
   tmdbId: '',
+  tmdbTitle: '',
+  videoType: '',
   enableTaskScraper: false,
   enableLazyStrm: false,
   enableOrganizer: false,
@@ -140,9 +146,14 @@ const readLastTargetFolder = () => {
 
   try {
     const parsed = JSON.parse(raw);
+    const targetFolder = parsed.lastTargetFolderPath || parsed.lastTargetFolderName || '';
+    if (!parsed.lastTargetFolderId || !targetFolder.startsWith('/')) {
+      localStorage.removeItem('lastTargetFolder');
+      return null;
+    }
     return {
-      targetFolderId: parsed.lastTargetFolderId || '',
-      targetFolder: parsed.lastTargetFolderName || ''
+      targetFolderId: parsed.lastTargetFolderId,
+      targetFolder
     };
   } catch (error) {
     localStorage.removeItem('lastTargetFolder');
@@ -220,6 +231,8 @@ const createInitialFormData = (initialData?: TaskInitialData | null): TaskFormDa
     sourceRegex: initialData.sourceRegex || '',
     targetRegex: initialData.targetRegex || '',
     tmdbId: initialData.tmdbId !== undefined && initialData.tmdbId !== null ? String(initialData.tmdbId) : '',
+    tmdbTitle: initialData.tmdbTitle || '',
+    videoType: initialData.videoType || '',
     enableTaskScraper: pickBool(initialData.enableTaskScraper, isEditing ? false : baseData.enableTaskScraper),
     enableLazyStrm: pickBool(initialData.enableLazyStrm, isEditing ? false : baseData.enableLazyStrm),
     enableOrganizer: pickBool(initialData.enableOrganizer, isEditing ? false : baseData.enableOrganizer),
@@ -449,6 +462,8 @@ const CreateTaskModal: React.FC<CreateTaskModalProps> = ({ isOpen, onClose, onSu
         ...prev,
         taskName: result.title,
         tmdbId: String(result.id),
+        tmdbTitle: result.title,
+        videoType: result.type === 'movie' ? 'movie' : 'tv',
         totalEpisodes
       }));
       setTmdbResults([]);
@@ -457,7 +472,9 @@ const CreateTaskModal: React.FC<CreateTaskModalProps> = ({ isOpen, onClose, onSu
       setFormData(prev => ({
         ...prev,
         taskName: result.title,
-        tmdbId: String(result.id)
+        tmdbId: String(result.id),
+        tmdbTitle: result.title,
+        videoType: result.type === 'movie' ? 'movie' : 'tv'
       }));
       setTmdbResults([]);
     } finally {
@@ -528,8 +545,8 @@ const CreateTaskModal: React.FC<CreateTaskModalProps> = ({ isOpen, onClose, onSu
         method = 'PUT';
         body = {
           resourceName: formData.taskName.trim(),
-          realFolderId: formData.targetFolderId,
-          realFolderName: formData.targetFolder || formData.targetFolderId,
+          targetFolderId: formData.targetFolderId,
+          targetFolderName: formData.targetFolder || formData.targetFolderId,
           currentEpisodes: Number(formData.currentEpisodes || 0),
           totalEpisodes: normalizedTotalEpisodes,
           status: formData.status,
@@ -543,6 +560,8 @@ const CreateTaskModal: React.FC<CreateTaskModalProps> = ({ isOpen, onClose, onSu
           remark: formData.remark,
           taskGroup: formData.taskGroup,
           tmdbId: formData.tmdbId,
+          tmdbTitle: formData.tmdbTitle,
+          videoType: formData.videoType,
           enableCron: formData.enableCron,
           cronExpression: formData.cronExpression,
           enableTaskScraper: formData.enableTaskScraper,
@@ -589,13 +608,16 @@ const CreateTaskModal: React.FC<CreateTaskModalProps> = ({ isOpen, onClose, onSu
       });
       const data = await response.json();
       if (data.success) {
-        localStorage.setItem(
-          'lastTargetFolder',
-          JSON.stringify({
-            lastTargetFolderId: formData.targetFolderId,
-            lastTargetFolderName: formData.targetFolder
-          })
-        );
+        if (!isEditing) {
+          localStorage.setItem(
+            'lastTargetFolder',
+            JSON.stringify({
+              lastTargetFolderId: formData.targetFolderId,
+              lastTargetFolderPath: formData.targetFolder,
+              lastTargetFolderName: formData.targetFolder.split('/').filter(Boolean).pop() || '全部文件'
+            })
+          );
+        }
         toast.success(isEditing ? '任务已保存' : isBatchMode ? '批量任务已提交' : '任务已创建');
         onSuccess();
         onClose();
@@ -1046,7 +1068,7 @@ const CreateTaskModal: React.FC<CreateTaskModalProps> = ({ isOpen, onClose, onSu
             ...prev,
             accountId: String(folder.accountId),
             targetFolderId: folder.id,
-            targetFolder: folder.name
+            targetFolder: folder.path
           }));
         }}
       />

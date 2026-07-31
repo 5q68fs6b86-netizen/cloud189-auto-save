@@ -11,6 +11,7 @@ interface Account {
 interface OrganizerTask {
   id: number;
   resourceName: string;
+  tmdbTitle?: string;
   shareFolderName?: string;
   account: Account;
   enableOrganizer: boolean;
@@ -155,7 +156,9 @@ const OrganizerTab: React.FC = () => {
                         </button>
                       </td>
                       <td className="px-6 py-4 font-medium ui-title">
-                        <div>{task.resourceName}</div>
+                        <div title={task.tmdbTitle ? `原始名称：${task.resourceName}` : ''}>
+                          {task.tmdbTitle || task.resourceName}
+                        </div>
                         {task.shareFolderName && (
                           <div className="text-xs text-slate-400 mt-0.5">{task.shareFolderName}</div>
                         )}
