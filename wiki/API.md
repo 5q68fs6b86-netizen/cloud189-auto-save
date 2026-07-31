@@ -147,6 +147,8 @@ Web 使用说明见 [[FileManager]]。
 | :--- | :--- | :--- |
 | GET | `/api/auto-series/search` | 搜索自动追剧候选资源 |
 | POST | `/api/auto-series` | 创建自动追剧任务 |
+| GET | `/api/auto-series/sources` | 获取自动追剧来源勾选与顺序 |
+| PUT | `/api/auto-series/sources` | 保存自动追剧来源勾选与顺序 |
 
 ### 创建自动追剧示例
 

@@ -1,5 +1,6 @@
-import React, { useState, useEffect } from 'react';
-import { Plus, PlayCircle, RefreshCw, AlertCircle, CheckCircle2, X, ArrowLeft, Check } from 'lucide-react';
+import React, { useState, useEffect, useRef } from 'react';
+import { Plus, PlayCircle, RefreshCw, AlertCircle, CheckCircle2, ArrowLeft, Check, GripVertical, ArrowUp, ArrowDown } from 'lucide-react';
+import { Reorder, useDragControls } from 'motion/react';
 import Modal from '../Modal';
 import Checkbox from '../ui/Checkbox';
 import { useToast } from '../ui/Toast';
@@ -19,11 +20,94 @@ interface AutoSeriesSettings {
 type AutoSeriesMode = 'normal' | 'lazy';
 
 interface CandidateResource {
+  id?: string;
+  slug?: string;
   messageId?: string;
   title: string;
   shareLink: string;
   score?: number;
+  source: 'cloudsaver' | 'hdhive' | 'subscription';
+  quality?: string;
+  sizeFormatted?: string;
+  isUnlocked?: boolean;
+  isFree?: boolean;
 }
+
+type AutoSeriesSource = 'cloudsaver' | 'hdhive' | 'pt' | 'subscription';
+interface SourcePreference { source: AutoSeriesSource; enabled: boolean }
+
+const SOURCE_LABELS: Record<AutoSeriesSource, string> = {
+  cloudsaver: 'CloudSaver',
+  hdhive: '影巢',
+  pt: 'PT',
+  subscription: '订阅'
+};
+const DEFAULT_SOURCES: SourcePreference[] = [
+  { source: 'cloudsaver', enabled: true },
+  { source: 'hdhive', enabled: true },
+  { source: 'pt', enabled: true },
+  { source: 'subscription', enabled: true }
+];
+
+interface SourcePreferenceRowProps {
+  item: SourcePreference;
+  index: number;
+  total: number;
+  onMove: (source: AutoSeriesSource, offset: number) => void;
+  onToggle: (source: AutoSeriesSource, enabled: boolean) => void;
+  onDragEnd: () => void;
+}
+
+const SourcePreferenceRow: React.FC<SourcePreferenceRowProps> = ({ item, index, total, onMove, onToggle, onDragEnd }) => {
+  const dragControls = useDragControls();
+
+  return (
+    <Reorder.Item
+      value={item}
+      dragListener={false}
+      dragControls={dragControls}
+      onDragEnd={onDragEnd}
+      whileDrag={{ scale: 1.02, boxShadow: '0 10px 25px rgba(15, 23, 42, 0.14)' }}
+      transition={{ type: 'spring', stiffness: 500, damping: 36 }}
+      className="flex items-center gap-3 px-4 py-3 rounded-2xl border border-slate-200 bg-white relative z-0"
+    >
+      <button
+        type="button"
+        aria-label={`拖动${SOURCE_LABELS[item.source]}调整顺序`}
+        title="拖动调整顺序"
+        onPointerDown={event => dragControls.start(event)}
+        className="-m-2 p-2 text-slate-400 hover:text-slate-700 cursor-grab active:cursor-grabbing touch-none select-none"
+      >
+        <GripVertical size={17} />
+      </button>
+      <span className="w-6 h-6 rounded-full bg-slate-100 text-slate-600 text-xs font-bold flex items-center justify-center">{index + 1}</span>
+      <span className="flex-1 text-sm font-medium text-slate-800">{SOURCE_LABELS[item.source]}</span>
+      <div className="flex items-center gap-1">
+        <button
+          type="button"
+          aria-label={`上移${SOURCE_LABELS[item.source]}`}
+          title="上移"
+          disabled={index === 0}
+          onClick={() => onMove(item.source, -1)}
+          className="p-1.5 text-slate-500 hover:bg-slate-100 rounded-lg disabled:opacity-25 disabled:cursor-not-allowed"
+        >
+          <ArrowUp size={15} />
+        </button>
+        <button
+          type="button"
+          aria-label={`下移${SOURCE_LABELS[item.source]}`}
+          title="下移"
+          disabled={index === total - 1}
+          onClick={() => onMove(item.source, 1)}
+          className="p-1.5 text-slate-500 hover:bg-slate-100 rounded-lg disabled:opacity-25 disabled:cursor-not-allowed"
+        >
+          <ArrowDown size={15} />
+        </button>
+      </div>
+      <Checkbox checked={item.enabled} onChange={enabled => onToggle(item.source, enabled)} />
+    </Reorder.Item>
+  );
+};
 
 const DEFAULT_AUTO_SERIES_MODE: AutoSeriesMode = 'lazy';
 
@@ -48,7 +132,9 @@ const AutoSeriesTab: React.FC = () => {
     keepCasAfterRestore: false
   });
   const [candidates, setCandidates] = useState<CandidateResource[]>([]);
-  const [selectedLink, setSelectedLink] = useState<string>('');
+  const [selectedCandidateIndex, setSelectedCandidateIndex] = useState(0);
+  const [sourcePreferences, setSourcePreferences] = useState<SourcePreference[]>(DEFAULT_SOURCES);
+  const sourcePreferencesRef = useRef(sourcePreferences);
   const [step, setStep] = useState<'form' | 'select'>('form');
 
   useEffect(() => {
@@ -56,18 +142,31 @@ const AutoSeriesTab: React.FC = () => {
   }, []);
 
   const fetchData = async () => {
-    try {
-      const [accountsRes, settingsRes] = await Promise.all([
-        fetch('/api/accounts'),
-        fetch('/api/settings')
-      ]);
-      const accountsData = await accountsRes.json();
-      const settingsData = await settingsRes.json();
-      
-      if (accountsData.success) setAccounts(accountsData.data);
-      if (settingsData.success) setDefaults(settingsData.data.task.autoCreate);
-    } catch (error) {
-      console.error('Failed to fetch data:', error);
+    const loadJson = async (url: string) => {
+      const response = await fetch(url);
+      if (!response.ok) throw new Error(`${url} 请求失败: ${response.status}`);
+      return response.json();
+    };
+    const [accountsResult, settingsResult, sourcesResult] = await Promise.allSettled([
+      loadJson('/api/accounts'),
+      loadJson('/api/settings'),
+      loadJson('/api/auto-series/sources')
+    ]);
+
+    if (accountsResult.status === 'fulfilled' && accountsResult.value.success) {
+      setAccounts(accountsResult.value.data);
+    } else if (accountsResult.status === 'rejected') {
+      console.error('Failed to fetch accounts:', accountsResult.reason);
+    }
+    if (settingsResult.status === 'fulfilled' && settingsResult.value.success) {
+      setDefaults(settingsResult.value.data.task.autoCreate);
+    } else if (settingsResult.status === 'rejected') {
+      console.error('Failed to fetch settings:', settingsResult.reason);
+    }
+    if (sourcesResult.status === 'fulfilled' && sourcesResult.value.success && Array.isArray(sourcesResult.value.data)) {
+      setSourcePreferences(sourcesResult.value.data);
+    } else if (sourcesResult.status === 'rejected') {
+      console.warn('Failed to fetch auto-series sources, using defaults:', sourcesResult.reason);
     }
   };
 
@@ -75,11 +174,11 @@ const AutoSeriesTab: React.FC = () => {
     setIsModalOpen(false);
     setForm({ title: '', year: '', mode: DEFAULT_AUTO_SERIES_MODE, manualSelect: false, keepCasAfterRestore: false });
     setCandidates([]);
-    setSelectedLink('');
+    setSelectedCandidateIndex(0);
     setStep('form');
   };
 
-  const createTask = async (shareLink?: string, resourceTitle?: string) => {
+  const createTask = async (shareLink?: string, resourceTitle?: string, sources?: AutoSeriesSource[]) => {
     setLoading(true);
     try {
       const response = await fetch('/api/auto-series', {
@@ -90,11 +189,17 @@ const AutoSeriesTab: React.FC = () => {
           year: form.year,
           mode: form.mode,
           keepCasAfterRestore: form.keepCasAfterRestore,
+          ...(sources ? { sources } : {}),
           ...(shareLink ? { shareLink, resourceTitle: resourceTitle || '' } : {})
         })
       });
       const data = await response.json();
       if (data.success) {
+        if (data.data?.source === 'pt') {
+          toast.success(`${data.data.reused ? '已复用' : '已创建'} PT 订阅：${data.data.taskName}（${data.data.selectionReason || data.data.preset}）`);
+          resetModal();
+          return;
+        }
         const resultMode: AutoSeriesMode = data.data?.mode === 'normal' ? 'normal' : form.mode;
         toast.success(data.data?.taskCount > 0
           ? `已创建${resultMode === 'lazy' ? '懒转存' : '自动'}任务：${data.data.taskName}`
@@ -110,6 +215,56 @@ const AutoSeriesTab: React.FC = () => {
     }
   };
 
+  const saveSourcePreferences = async (next: SourcePreference[]) => {
+    sourcePreferencesRef.current = next;
+    setSourcePreferences(next);
+    try {
+      const response = await fetch('/api/auto-series/sources', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sources: next })
+      });
+      const data = await response.json();
+      if (!data.success) throw new Error(data.error || '保存失败');
+      sourcePreferencesRef.current = data.data;
+      setSourcePreferences(data.data);
+    } catch (error) {
+      toast.error('来源偏好保存失败: ' + (error as Error).message);
+      await fetchData();
+    }
+  };
+
+  const toggleSource = (source: AutoSeriesSource, enabled: boolean) => {
+    void saveSourcePreferences(sourcePreferences.map(item => item.source === source ? { ...item, enabled } : item));
+  };
+
+  const reorderSource = (items: SourcePreference[], source: AutoSeriesSource, target: AutoSeriesSource) => {
+    if (source === target) return items;
+    const next = [...items];
+    const from = next.findIndex(item => item.source === source);
+    const to = next.findIndex(item => item.source === target);
+    if (from < 0 || to < 0) return items;
+    const [moved] = next.splice(from, 1);
+    next.splice(to, 0, moved);
+    return next;
+  };
+
+  const moveSourceBy = (source: AutoSeriesSource, offset: number) => {
+    const from = sourcePreferences.findIndex(item => item.source === source);
+    const target = sourcePreferences[from + offset];
+    if (!target) return;
+    void saveSourcePreferences(reorderSource(sourcePreferences, source, target.source));
+  };
+
+  const handleSourceReorder = (next: SourcePreference[]) => {
+    sourcePreferencesRef.current = next;
+    setSourcePreferences(next);
+  };
+
+  const handleSourceDragEnd = () => {
+    void saveSourcePreferences(sourcePreferencesRef.current);
+  };
+
   const handleSearch = async () => {
     if (!form.title.trim()) {
       toast.warning('剧名不能为空');
@@ -119,16 +274,23 @@ const AutoSeriesTab: React.FC = () => {
     try {
       const params = new URLSearchParams({ title: form.title.trim() });
       if (form.year.trim()) params.append('year', form.year.trim());
+      params.append('sources', sourcePreferences.filter(item => item.enabled && item.source !== 'pt').map(item => item.source).join(','));
       const response = await fetch(`/api/auto-series/search?${params.toString()}`);
       const data = await response.json();
       if (data.success) {
         const list: CandidateResource[] = data.data?.resources || [];
         if (!list.length) {
-          toast.info('未搜索到可用资源');
+          const ptEnabled = sourcePreferences.some(item => item.enabled && item.source === 'pt');
+          if (ptEnabled) {
+            toast.info('网盘来源未找到候选，正在回退 PT');
+            await createTask(undefined, undefined, ['pt']);
+          } else {
+            toast.info('未搜索到可用资源');
+          }
           return;
         }
         setCandidates(list);
-        setSelectedLink(list[0]?.shareLink || '');
+        setSelectedCandidateIndex(0);
         setStep('select');
       } else {
         toast.error('资源搜索失败: ' + data.error);
@@ -146,20 +308,53 @@ const AutoSeriesTab: React.FC = () => {
       toast.warning('剧名不能为空');
       return;
     }
+    if (!sourcePreferences.some(item => item.enabled)) {
+      toast.warning('请至少启用一个资源来源');
+      return;
+    }
     if (form.manualSelect) {
-      await handleSearch();
+      const hasCloudSource = sourcePreferences.some(item => item.enabled && item.source !== 'pt');
+      if (hasCloudSource) {
+        await handleSearch();
+      } else {
+        await createTask(undefined, undefined, ['pt']);
+      }
       return;
     }
     await createTask();
   };
 
   const handleConfirmSelection = async () => {
-    if (!selectedLink) {
+    const picked = candidates[selectedCandidateIndex];
+    if (!picked || (!picked.shareLink && !picked.slug)) {
       toast.warning('请选择一个资源');
       return;
     }
-    const picked = candidates.find(item => item.shareLink === selectedLink);
-    await createTask(selectedLink, picked?.title);
+    setLoading(true);
+    try {
+      const response = await fetch('/api/auto-series', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: form.title,
+          year: form.year,
+          mode: form.mode,
+          keepCasAfterRestore: form.keepCasAfterRestore,
+          source: picked.source,
+          shareLink: picked.shareLink,
+          resourceSlug: picked.slug,
+          resourceTitle: picked.title
+        })
+      });
+      const data = await response.json();
+      if (!data.success) throw new Error(data.error || '创建失败');
+      toast.success(`已从${SOURCE_LABELS[picked.source]}创建任务：${data.data.taskName}`);
+      resetModal();
+    } catch (error) {
+      toast.error('自动追剧失败: ' + (error as Error).message);
+    } finally {
+      setLoading(false);
+    }
   };
 
   const getAccountName = (id: string) => {
@@ -167,7 +362,7 @@ const AutoSeriesTab: React.FC = () => {
     return account ? (account.alias || account.username) : id;
   };
 
-  const isConfigured = defaults?.accountId && defaults?.targetFolderId;
+  const isConfigured = Boolean(defaults?.accountId && defaults?.targetFolderId);
 
   return (
     <div className="space-y-8">
@@ -279,6 +474,27 @@ const AutoSeriesTab: React.FC = () => {
               </div>
             </div>
 
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <label className="text-sm font-medium text-slate-700">资源来源与回退顺序</label>
+                <span className="text-[11px] text-slate-400">拖拽排序，自动保存</span>
+              </div>
+              <Reorder.Group axis="y" values={sourcePreferences} onReorder={handleSourceReorder} className="space-y-2">
+                {sourcePreferences.map((item, index) => (
+                  <SourcePreferenceRow
+                    key={item.source}
+                    item={item}
+                    index={index}
+                    total={sourcePreferences.length}
+                    onMove={moveSourceBy}
+                    onToggle={toggleSource}
+                    onDragEnd={handleSourceDragEnd}
+                  />
+                ))}
+              </Reorder.Group>
+              {!sourcePreferences.some(item => item.enabled) && <p className="text-xs text-red-600">请至少启用一个来源。</p>}
+            </div>
+
             {/* 手动选择资源开关 —— 默认关闭 */}
             <div className="px-4 py-3 bg-slate-50 border border-slate-200 rounded-2xl hover:bg-slate-100/70 transition-colors">
               <Checkbox
@@ -321,7 +537,7 @@ const AutoSeriesTab: React.FC = () => {
                 className="flex-1 px-6 py-3 bg-[#0b57d0] text-white rounded-full font-medium hover:bg-[#0b57d0]/90 transition-all shadow-md flex items-center justify-center gap-2 disabled:opacity-60"
               >
                 {(loading || searching) && <RefreshCw size={18} className="animate-spin" />}
-                {form.manualSelect ? '搜索资源' : '开始追剧'}
+                {form.manualSelect ? '搜索网盘资源' : '按顺序开始追剧'}
               </button>
             </div>
           </form>
@@ -332,12 +548,14 @@ const AutoSeriesTab: React.FC = () => {
             </div>
             <div className="max-h-[360px] overflow-y-auto space-y-2 pr-1">
               {candidates.map((item, index) => {
-                const active = item.shareLink === selectedLink;
+                const active = index === selectedCandidateIndex;
                 return (
                   <button
                     key={item.shareLink || index}
                     type="button"
-                    onClick={() => setSelectedLink(item.shareLink)}
+                    onClick={() => {
+                      setSelectedCandidateIndex(index);
+                    }}
                     className={`w-full text-left p-4 rounded-2xl border transition-all flex items-start gap-3 ${
                       active
                         ? 'border-[#0b57d0] bg-[#eef4fe] shadow-sm'
@@ -354,10 +572,14 @@ const AutoSeriesTab: React.FC = () => {
                     <div className="flex-1 min-w-0">
                       <div className="text-sm font-medium text-slate-900 line-clamp-2 leading-snug">{item.title}</div>
                       <div className="mt-1 flex items-center gap-2 text-[11px] text-slate-500">
+                        <span className="px-1.5 py-0.5 bg-blue-50 text-blue-700 rounded-md">{SOURCE_LABELS[item.source]}</span>
                         {typeof item.score === 'number' && (
                           <span className="px-1.5 py-0.5 bg-slate-100 rounded-md">匹配度 {item.score}</span>
                         )}
-                        <span className="truncate" title={item.shareLink}>{item.shareLink}</span>
+                        {item.quality && <span>{item.quality}</span>}
+                        {item.sizeFormatted && <span>{item.sizeFormatted}</span>}
+                        {item.source === 'hdhive' && <span>{item.isUnlocked ? '已解锁' : '免费可解锁'}</span>}
+                        <span className="truncate" title={item.shareLink}>{item.shareLink || '创建时解锁'}</span>
                       </div>
                     </div>
                   </button>
@@ -383,7 +605,7 @@ const AutoSeriesTab: React.FC = () => {
               <button
                 type="button"
                 onClick={handleConfirmSelection}
-                disabled={loading || !selectedLink}
+                disabled={loading || !candidates[selectedCandidateIndex]}
                 className="flex-1 px-6 py-3 bg-[#0b57d0] text-white rounded-full font-medium hover:bg-[#0b57d0]/90 transition-all shadow-md flex items-center justify-center gap-2 disabled:opacity-60"
               >
                 {loading && <RefreshCw size={18} className="animate-spin" />}

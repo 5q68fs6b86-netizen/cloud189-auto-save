@@ -159,6 +159,186 @@ class PtService {
         return this.sourceService.testMikanBaseUrl(baseUrl);
     }
 
+    async createAutoSeriesSubscription({ title, year = '', tmdbInfo = null, accountId, targetFolderId, targetFolder }) {
+        const candidates = await this._collectAutoSeriesCandidates(title);
+        if (!candidates.length) throw new Error('PT 聚合搜索未找到可用 RSS');
+
+        const ranked = candidates
+            .map(candidate => ({ ...candidate, score: this._scoreAutoSeriesCandidate(candidate, title, tmdbInfo) }))
+            .sort((left, right) => right.score - left.score);
+        const aiSelection = await this._selectAutoSeriesCandidateWithAi(ranked, title, year, tmdbInfo);
+        const selected = aiSelection?.candidate || ranked[0];
+        const selectionReason = aiSelection?.reason || `确定性评分 ${selected.score}`;
+
+        const repo = getPtSubscriptionRepository();
+        const existing = await repo.findOne({ where: { accountId: Number(accountId), rssUrl: selected.rssUrl } });
+        if (existing) return this._buildAutoSeriesPtResult(existing, selected, selectionReason, true);
+
+        const subscription = repo.create({
+            name: `${tmdbInfo?.title || title}${year ? ` (${year})` : ''}`.trim(),
+            sourcePreset: selected.preset,
+            rssUrl: selected.rssUrl,
+            includePattern: selected.includePattern || '',
+            excludePattern: '',
+            qualityPattern: '',
+            resolutionPattern: '',
+            effectPattern: '',
+            sizeMinMB: 0,
+            sizeMaxMB: 0,
+            seedersMin: 0,
+            freeOnly: false,
+            episodeDedup: true,
+            standbyRssJson: '',
+            coexist: false,
+            downloadNew: false,
+            delayedDownloadMinutes: 0,
+            notDownloadEpisodes: '',
+            skipHalfEpisode: false,
+            customEpisode: false,
+            customEpisodeRegex: '',
+            customEpisodeGroupIndex: 1,
+            episodeOffset: 0,
+            omit: false,
+            totalEpisodeNumber: Number(tmdbInfo?.totalEpisodes || 0) || 0,
+            autoDisabled: false,
+            globalExclude: true,
+            accountId: Number(accountId),
+            targetFolderId: String(targetFolderId || ''),
+            targetFolder: String(targetFolder || ''),
+            enabled: true
+        });
+        await repo.save(subscription);
+        try {
+            await this.runPoll(subscription.id);
+        } catch (error) {
+            logTaskEvent(`[PT] 自动追剧订阅首次轮询失败 ${subscription.name}: ${error.message || error}`);
+        }
+        return this._buildAutoSeriesPtResult(subscription, selected, selectionReason, false);
+    }
+
+    async _collectAutoSeriesCandidates(title) {
+        const presets = ['mikan', 'anibt', 'animegarden', 'nyaa', 'dmhy'];
+        const settled = await Promise.allSettled(presets.map(preset => this.searchSource(preset, title)));
+        const rawCandidates = [];
+        for (let index = 0; index < settled.length; index += 1) {
+            if (settled[index].status !== 'fulfilled') continue;
+            const preset = presets[index];
+            for (const result of settled[index].value || []) {
+                let feeds = [];
+                if (Array.isArray(result.groups) && result.groups.length) {
+                    feeds = result.groups;
+                } else if (result.directRss && result.url) {
+                    feeds = [{ name: result.title, rssUrl: result.url }];
+                } else {
+                    try {
+                        feeds = await this.getSourceGroups(preset, {
+                            bgmId: result.id,
+                            bangumiId: result.id,
+                            bangumiUrl: result.url
+                        });
+                    } catch (_) {}
+                }
+                for (const feed of feeds.slice(0, 8)) {
+                    if (!feed?.rssUrl) continue;
+                    rawCandidates.push({
+                        id: `${preset}:${rawCandidates.length}`,
+                        preset: feed.source || preset,
+                        title: result.title || title,
+                        groupName: feed.name || '',
+                        rssUrl: feed.rssUrl,
+                        includePattern: feed.includePattern || '',
+                        itemCount: Number(feed.itemCount || result.itemCount || 0),
+                        preview: Array.isArray(result.preview) ? result.preview : []
+                    });
+                }
+            }
+        }
+        const preRanked = rawCandidates
+            .map(candidate => ({
+                ...candidate,
+                preScore: candidate.itemCount
+                    + candidate.preview.filter(value => String(value).toLowerCase().includes(String(title).toLowerCase())).length * 20
+            }))
+            .sort((left, right) => right.preScore - left.preScore)
+            .slice(0, 16);
+        return await Promise.all(preRanked.map(async candidate => {
+            let items = [];
+            try {
+                items = await this.getSourceGroupItems(candidate.rssUrl, candidate.preset);
+            } catch (_) {}
+            return { ...candidate, items: items.slice(0, 20) };
+        }));
+    }
+
+    _scoreAutoSeriesCandidate(candidate, title, tmdbInfo) {
+        const samples = candidate.items || [];
+        const text = samples.map(item => item.title).join('\n').toLowerCase();
+        const names = [title, tmdbInfo?.title, tmdbInfo?.originalTitle]
+            .filter(Boolean).map(value => normalizeWhitespace(value).toLowerCase());
+        let score = Math.min(samples.length, 20);
+        for (const name of names) if (text.includes(name)) score += 25;
+        const count = pattern => samples.filter(item => pattern.test(String(item.title || ''))).length;
+        score += count(/2160p|\b4k\b/i) * 7;
+        score += count(/dolby[ ._-]?vision|\bdv\b|hdr10|\bhdr\b/i) * 3;
+        score += count(/remux|blu[ ._-]?ray/i) * 2;
+        score += count(/1080p/i) * 2;
+        score -= count(/预告|trailer|teaser|sample|合集|全集打包|480p|720p/i) * 8;
+        score += samples.filter(item => Number(item.episodeNumber) > 0).length;
+        return score;
+    }
+
+    async _selectAutoSeriesCandidateWithAi(candidates, title, year, tmdbInfo) {
+        if (!aiService.isEnabled() || !candidates.length) return null;
+        const payload = candidates.slice(0, 12).map(candidate => ({
+            id: candidate.id,
+            source: candidate.preset,
+            group: candidate.groupName,
+            deterministicScore: candidate.score,
+            samples: candidate.items.slice(0, 12).map(item => ({
+                title: item.title,
+                size: item.size,
+                resolution: item.resolution,
+                quality: item.quality,
+                season: item.seasonNumber,
+                episode: item.episodeNumber
+            }))
+        }));
+        const response = await aiService.chat([
+            {
+                role: 'system',
+                content: '从 PT RSS 候选中选择持续追剧源。优先标题和季度正确、集数连续、2160p/4K、HDR/Dolby Vision、Remux/BluRay，其次 1080p；排除预告、样片、错误剧集和无关合集。只返回 JSON：{"candidateId":"...","reason":"..."}，candidateId 必须来自输入。'
+            },
+            {
+                role: 'user',
+                content: JSON.stringify({ title, year, tmdb: tmdbInfo ? { title: tmdbInfo.title, originalTitle: tmdbInfo.originalTitle, totalEpisodes: tmdbInfo.totalEpisodes } : null, candidates: payload })
+            }
+        ], { temperature: 0, max_tokens: 600 });
+        if (!response.success) return null;
+        try {
+            const parsed = JSON.parse(String(response.data || '').replace(/```(?:json)?\s*|\s*```/gi, '').trim());
+            const candidate = candidates.find(item => item.id === parsed.candidateId);
+            return candidate ? { candidate, reason: String(parsed.reason || 'AI 根据文件样本选择').slice(0, 300) } : null;
+        } catch (_) {
+            return null;
+        }
+    }
+
+    _buildAutoSeriesPtResult(subscription, selected, selectionReason, reused) {
+        return {
+            source: 'pt',
+            mode: 'pt',
+            taskCount: 0,
+            taskIds: [],
+            taskName: subscription.name,
+            resourceTitle: selected.groupName || selected.title,
+            subscriptionId: subscription.id,
+            preset: selected.preset,
+            rssUrl: selected.rssUrl,
+            selectionReason,
+            reused
+        };
+    }
+
     // ==================== 轮询 ====================
 
     async runPoll(subscriptionId = null) {
