@@ -678,7 +678,7 @@ class PtSourceService {
     // --- AniBT (JSON API) ---
 
     async _searchAniBT(keyword, externalSignal = null) {
-        const host = 'https://site.anibt.net';
+        const host = 'https://anibt.net';
         // 先获取当前季度和可用季度列表
         const currentBody = await this._fetchJSON(`${host}/api/seasons/anime`, {}, 'ptAnibt', 45000, externalSignal);
         const availableSeasons = currentBody?.data?.availableSeasons || [];
@@ -732,7 +732,7 @@ class PtSourceService {
     }
 
     async _getAniBTGroups(bgmId) {
-        const host = 'https://site.anibt.net';
+        const host = 'https://anibt.net';
         const url = `${host}/api/anime/groups`;
         const body = await this._fetchJSON(url, { bgmId: String(bgmId || '') }, 'ptAnibt');
         const groups = [];
@@ -1044,7 +1044,7 @@ class PtSourceService {
                 responseType: 'text',
                 headers: DEFAULT_HEADERS,
                 signal,
-                retry: { limit: 0 },
+                retry: { limit: 2 },
                 ...proxyAgent
             });
             try { return JSON.parse(resp.body || '{}'); } catch { return {}; }

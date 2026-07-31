@@ -104,7 +104,7 @@ class DoubanService {
 
         const html = response.body;
         const items = [];
-        const regex = /<div class="item">[\s\S]*?<div class="hd">[\s\S]*?<a href="[^"]*\/subject\/(\d+)\/"[^>]*>[\s\S]*?<span class="title">([^<]+)<\/span>[\s\S]*?<div class="bd">[\s\S]*?<span class="rating_num">([^<]*)<\/span>[\s\S]*?<span>(\d{4})/g;
+        const regex = /<div class="item">[\s\S]*?<div class="hd">[\s\S]*?<a href="[^"]*\/subject\/(\d+)\/"[^>]*>[\s\S]*?<span class="title">([^<]+)<\/span>[\s\S]*?<div class="bd">[\s\S]*?<br>\s*(\d{4})[\s\S]*?<span class="rating_num"[^>]*>([^<]*)<\/span>/g;
 
         let match;
         while ((match = regex.exec(html)) !== null) {
@@ -112,8 +112,8 @@ class DoubanService {
                 id: match[1],
                 title: match[2],
                 poster: '',
-                rate: match[3],
-                year: match[4],
+                year: match[3],
+                rate: match[4],
                 type: 'movie',
                 source: 'douban',
             });
@@ -204,7 +204,7 @@ class DoubanService {
         });
 
         const data = JSON.parse(response.body);
-        const result = (data.data || []).map(item => ({
+        const result = (data.list || data.data || []).map(item => ({
             id: String(item.id),
             title: item.name_cn || item.name,
             poster: item.images?.large || item.images?.medium || '',

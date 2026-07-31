@@ -13,7 +13,8 @@ test('auto series source preferences preserve order, remove duplicates and fill 
     ]), [
         { source: 'pt', enabled: true },
         { source: 'cloudsaver', enabled: false },
-        { source: 'hdhive', enabled: true }
+        { source: 'hdhive', enabled: true },
+        { source: 'subscription', enabled: true }
     ]);
 });
 
