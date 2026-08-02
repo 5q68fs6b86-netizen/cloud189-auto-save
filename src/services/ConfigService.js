@@ -212,8 +212,8 @@ class ConfigService {
         model: 'GLM-4-Flash-250414',
         flowControlEnabled: false,
         rename: {
-          template: "{name} - {se}{ext}",  // 默认模板
-          movieTemplate: "{name} ({year}){ext}",  // 电影模板
+          template: "{{name}} - {{se}}{{ext}}",  // 默认模板（nunjucks）
+          movieTemplate: "{{name}}{% if year %} ({{year}}){% endif %}{{ext}}",  // 电影模板（年份为空时省括号）
         }
       },
       alist: {

@@ -84,15 +84,30 @@ class StrmService {
             const expectedStrmPaths = new Set(
                 mediaFiles.map(file => this._buildRelativeStrmPath(file.relativeDir || '', file.name))
             );
+            // 本次文件覆盖的季目录集合——compare 清理和 overwrite 清除都限制在这个范围内
+            const coveredDirs = new Set(
+                mediaFiles.map(file => this._normalizeRelativePath(file.relativeDir || ''))
+            );
             if (compare) {
                 const strmFiles = await this._listStrmFilesRecursive(this._normalizeBaseRelativePath(taskRoot));
                 for (const file of strmFiles) {
+                    const dirName = path.dirname(file.relativePath);
+                    const normalizedDir = dirName === '.' ? '' : this._normalizeRelativePath(dirName);
+                    if (!coveredDirs.has(normalizedDir)) {
+                        continue;
+                    }
                     if (!expectedStrmPaths.has(file.relativePath)) {
                         await this.delete(file.path);
                     }
                 }
             }
-            overwrite && await this._deleteDirAllStrm(targetDir)
+            if (overwrite) {
+                // 只清除本次文件覆盖的季目录，避免误删同系列其他季的 STRM
+                for (const relDir of coveredDirs) {
+                    const dirPath = relDir ? path.join(targetDir, relDir) : targetDir;
+                    await this._deleteDirAllStrm(dirPath);
+                }
+            }
             await this._ensureDirectoryExists(targetDir);
             for (const file of files) {
                 // 检查文件是否是媒体文件
@@ -283,12 +298,13 @@ class StrmService {
             })
         );
 
+        // 本次文件覆盖的季目录集合——compare 清理和 overwrite 清除都限制在这个范围内，
+        // 避免同 targetRoot 下的兄弟目录(例如多季任务 Season 01 / Season 02)被误删
+        const coveredDirs = new Set(
+            mediaFiles.map(file => this._normalizeRelativePath(file.relativeDir || ''))
+        );
+
         if (compare) {
-            // 收窄 compare 范围: 仅在本次 files 实际涉及的子目录内做清理,
-            // 避免同 targetRoot 下的兄弟目录(例如多季任务 Season 01 / Season 02)被误删
-            const coveredDirs = new Set(
-                mediaFiles.map(file => this._normalizeRelativePath(file.relativeDir || ''))
-            );
             const strmFiles = await this._listStrmFilesRecursive(normalizedTargetRoot);
             for (const file of strmFiles) {
                 const dirName = path.dirname(file.relativePath);
@@ -302,7 +318,13 @@ class StrmService {
             }
         }
 
-        overwrite && await this._deleteDirAllStrm(targetDir);
+        if (overwrite) {
+            // 只清除本次文件覆盖的季目录，避免误删同系列其他季的 STRM
+            for (const relDir of coveredDirs) {
+                const dirPath = relDir ? path.join(targetDir, relDir) : targetDir;
+                await this._deleteDirAllStrm(dirPath);
+            }
+        }
         await this._ensureDirectoryExists(targetDir);
 
         for (const file of files) {

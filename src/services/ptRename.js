@@ -1,6 +1,8 @@
 const path = require('path');
 const { safeFileName } = require('./ptUtils');
 const ConfigService = require('./ConfigService');
+const { renderFileName } = require('../utils/templateRenderer');
+const { parseMediaTitle } = require('../utils/mediaTitleParser');
 
 // 默认集数提取正则（参考 ani-rss）
 const DEFAULT_EPISODE_REGEX = '(第\\d+[话話集]|EP?\\d+(\\.5)?| - \\d+(\\.5)?|\\[\\d+(\\.5)?\\]|【\\d+(\\.5)?】)';
@@ -41,6 +43,12 @@ class PtRenameService {
     extractSeason(title, customRegex = '', defaultSeason = 1) {
         if (!title) return defaultSeason;
 
+        // 无自定义正则时，优先走统一解析器（含 anitomy 动漫分流）
+        if (!customRegex) {
+            const parsed = parseMediaTitle(title);
+            if (parsed.season != null && parsed.season > 0) return parsed.season;
+        }
+
         try {
             const regexStr = customRegex || DEFAULT_SEASON_REGEX;
             const regex = new RegExp(regexStr, 'i');
@@ -74,6 +82,16 @@ class PtRenameService {
      */
     extractEpisode(title, customRegex = '') {
         if (!title) return null;
+
+        // 无自定义正则且无半集(.5)时，优先走统一解析器（含 anitomy 动漫分流）。
+        // 半集(.5)是 PT 专用形态，parseMediaTitle 不支持，保留正则回退处理。
+        if (!customRegex && !/\.5\b/.test(title)) {
+            const parsed = parseMediaTitle(title);
+            if (parsed.episode != null) {
+                const episode = parsed.episode;
+                return { episode, episodeStr: episode < 100 ? String(episode).padStart(2, '0') : String(episode) };
+            }
+        }
 
         try {
             const regexStr = customRegex || DEFAULT_EPISODE_REGEX;
@@ -210,8 +228,8 @@ class PtRenameService {
 
         // 文件名模板：与自动追剧 _processRename 一致
         const template = isMovie
-            ? (ConfigService.getConfigValue('openai.rename.movieTemplate') || '{name} ({year}){ext}')
-            : (ConfigService.getConfigValue('openai.rename.template') || '{name} - {se}{ext}');
+            ? (ConfigService.getConfigValue('openai.rename.movieTemplate') || '{{name}}{% if year %} ({{year}}){% endif %}{{ext}}')
+            : (ConfigService.getConfigValue('openai.rename.template') || '{{name}} - {{se}}{{ext}}');
 
         // 标题与年份
         // 目录和文件必须使用同一个标准标题，避免 TMDB 中文目录下混入 AI 提取的英文文件名。
@@ -241,24 +259,20 @@ class PtRenameService {
         const originalExt = path.extname(originalName);
         const ext = (aiEpisode && aiEpisode.extension) || originalExt || '';
 
-        // 占位符替换（与 task._generateFileName 一致）
-        const replaceMap = {
-            '{name}': title,
-            '{year}': year ? String(year) : '',
-            '{s}': seasonStr,
-            '{e}': episodeStr || '01',
-            '{sn}': seasonNum || 1,
-            '{en}': episodeNum || 1,
-            '{ext}': ext,
-            '{se}': `S${seasonStr}E${episodeStr || '01'}`
+        // 模板渲染（与 task._generateFileName / buildFileName 统一走 renderFileName）
+        const vars = {
+            name: title,
+            year: year ? String(year) : '',
+            s: seasonStr,
+            e: episodeStr || '01',
+            sn: seasonNum || 1,
+            en: episodeNum || 1,
+            ext: ext,
+            se: `S${seasonStr}E${episodeStr || '01'}`
         };
 
-        let baseName = template;
-        for (const [key, value] of Object.entries(replaceMap)) {
-            const escaped = key.replace(/[{}]/g, c => '\\' + c);
-            baseName = baseName.replace(new RegExp(escaped, 'g'), String(value));
-        }
-        // 模板里的 {ext} 已经把原始扩展拼上了，去掉以便统一换成 .strm
+        let baseName = renderFileName(template, vars);
+        // 模板里的 {{ext}} 已经把原始扩展拼上了，去掉以便统一换成 .strm
         if (ext && baseName.endsWith(ext)) {
             baseName = baseName.slice(0, -ext.length);
         }

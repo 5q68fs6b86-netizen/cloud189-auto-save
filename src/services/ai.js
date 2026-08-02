@@ -259,6 +259,8 @@ class AIService {
                             3. 如果无法确定年份，返回0, 如果无法确定季编号, 返回01
                             4. 如果无法判断类型，默认为 movie
                             5. 如果是单个文件，episode 数组只包含一个元素
+                            6. 多部独立电影组成的合集（标题含"剧场版""电影""Movie"，或各文件有独立片名和不同年份）应判为 movie；此时 episode 数组中每个条目必须填写该文件自己的片名（name）和年份（year），而不是合集的统一标题
+                            7. 特殊季文件（如 NCOP/NCED 无字幕片头片尾、OVA、SP 特别篇等非正片内容），season 必须设为 "00"（Emby 特别篇），episode 按顺序编号，不要占用正片集号
 
                             返回格式必须是: {
                                 name: string,  // 纯净的影视剧名称，不含年份
@@ -268,6 +270,7 @@ class AIService {
                                 episode: [{ // 仅包含当前处理的 chunk 的剧集信息
                                     id: string,
                                     name: string, // 使用父级目录中提取到的纯净的影视剧名称，不含年份
+                                    year: number, // 该文件自己的年份；电影合集时各文件年份不同，剧集时可省略
                                     season: string,  // 季编号，必须是纯数字字符串，如："01"
                                     episode: string,  // 集编号，如果小于100使用两位数字（如："01"），大于等于100使用实际位数
                                     extension: string
@@ -305,11 +308,14 @@ class AIService {
                             类型: ${baseResult.type}
                             季编号: ${baseResult.season || 'N/A'} // 提供季编号上下文
 
+                            如果类型是 movie 且文件列表包含多部独立电影，每个条目必须保留该文件自己的 name 和 year，不能统一成合集名称。
+
                             返回格式必须是**严格的 JSON 对象**，包含一个 'episode' 键，其值为一个数组。数组中的每个对象代表一个剧集信息。**确保所有键（如 "id", "name", "season", "episode", "extension"）都用双引号括起来**：
                             {
                                 "episode": [{ // 仅包含当前处理的 chunk 的剧集信息
                                     "id": "string",
                                     "name": "${baseResult.name}", // 使用上面提供的影视剧名称，不能包含年份
+                                    "year": ${baseResult.year || 0}, // movie 合集填写该文件自己的年份
                                     "season": "${baseResult.season || ''}",  // 使用上面提供的季编号 (确保是字符串)
                                     "episode": "string",  // 集编号，如果小于100使用两位数字（如："01"），大于等于100使用实际位数
                                     "extension": "string"
@@ -324,7 +330,8 @@ class AIService {
                             3. **必须严格按照上述 JSON 格式返回，确保所有键和字符串值都使用双引号。**
                             4. 必须严格按照此格式返回，不要添加任何额外说明文字。
                             5. 不要使用代码块标记，直接返回 JSON 对象
-                            6. 只需要返回 'episode' 字段。`
+                            6. 只需要返回 'episode' 字段。
+                            7. 特殊季文件（如 NCOP/NCED 无字幕片头片尾、OVA、SP 特别篇等非正片内容），season 必须设为 "00"（Emby 特别篇），episode 按顺序编号，不要占用正片集号`
                         },
                         {
                             role: 'user',
@@ -364,12 +371,21 @@ class AIService {
                     };
                     allEpisodes.push(...resultChunk.episode);
                 } else {
-                    // 对于后续块，确保 episode 里的 name 和 season 与 baseResult 一致
-                    const correctedEpisodes = resultChunk.episode.map(ep => ({
-                        ...ep,
-                        name: baseResult.name, // 强制使用基础名称
-                        season: baseResult.season // 强制使用基础季编号
-                    }));
+                    // 后续块：电视剧统一作品名，电影合集保留逐文件片名/年份；
+                    // season 始终保留 AI 的逐文件结果，避免把特别篇塞回正片季。
+                    const preserveMovieMetadata = baseResult.type === 'movie' && files.length > 1;
+                    const correctedEpisodes = resultChunk.episode.map(ep => {
+                        const rawSeason = String(ep.season ?? '').trim();
+                        const season = /^\d+$/.test(rawSeason)
+                            ? rawSeason.padStart(2, '0')
+                            : baseResult.season;
+                        return {
+                            ...ep,
+                            name: preserveMovieMetadata ? (ep.name || baseResult.name) : baseResult.name,
+                            ...(preserveMovieMetadata && ep.year == null ? { year: baseResult.year } : {}),
+                            season
+                        };
+                    });
                     allEpisodes.push(...correctedEpisodes);
                 }
             }
@@ -628,6 +644,62 @@ class AIService {
         }
 
         return true;
+    }
+
+    /**
+     * 判断一个多文件资源是否为"多部独立电影组成的合集"。
+     * 独立于 simpleChatCompletion（那个负责解析文件名/季集），这里只回答"是不是合集"。
+     * @param {string} resourceName 原始资源标题（可能不规范）
+     * @param {Array<{name?:string}>} files 文件名列表
+     * @returns {Promise<{isCollection:boolean, reason:string}|null>} 失败返回 null（调用方走确定性 fallback）
+     */
+    async detectCollectionWithAI(resourceName, files = []) {
+        const openaiConfig = ConfigService.getConfigValue('openai');
+        if (!this.isEnabled(openaiConfig)) {
+            return null;
+        }
+        const fileList = (files || [])
+            .map((f) => f.name || f.restoreName || '')
+            .filter(Boolean)
+            .slice(0, 30);
+        if (fileList.length < 2) {
+            return { isCollection: false, reason: '文件数不足' };
+        }
+        const messages = [
+            {
+                role: 'system',
+                content: `你是一个影视资源分类助手。判断给定资源是否为"多部独立电影组成的合集"（如"名侦探柯南剧场版01-26合集"，里面是 26 部各自独立的电影）。
+
+判断要点：
+1. 合集特征：各文件是独立影片（片名不同、上映年份各不相同），标题常含"合集/剧场版/电影/Movie/系列/Collection"。
+2.剧集特征：各文件是同一部剧的不同集（文件名含 S01E01、第x集、EP01，或仅以集号区分，年份相同或无年份）。
+3. 即使标题含"电影"字样，若文件表现为剧集（同一年份、按集编号），也应判为非合集。
+
+严格返回 JSON 对象，不要代码块，不要说明文字：
+{ "isCollection": boolean, "reason": string }`
+            },
+            {
+                role: 'user',
+                content: `资源标题：${resourceName || '(无)'}\n文件列表：\n${fileList.map((n, i) => `${i + 1}. ${n}`).join('\n')}`
+            }
+        ];
+
+        try {
+            return await this._retryOperation('AI合集判定', async () => {
+                const response = await this.chat(messages, { temperature: 0, max_tokens: 300 });
+                if (!response.success) {
+                    throw new Error(response.error || 'AI 调用失败');
+                }
+                const parsed = JSON.parse(this._getCleanAIJsonText(response.data));
+                return {
+                    isCollection: !!parsed.isCollection,
+                    reason: String(parsed.reason || '')
+                };
+            });
+        } catch (error) {
+            logTaskEvent(`[Layout] AI 合集判定失败，回退确定性规则: ${error.message}`);
+            return null;
+        }
     }
 }
 

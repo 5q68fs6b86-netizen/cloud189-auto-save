@@ -279,13 +279,10 @@ async function handleCreateTask(svc, chatId, data, messageId) {
         };
 
         const tasks = await svc.taskService.createTask(taskDto);
-        const taskIds = tasks.map(t => t.id);
-
         await edit(svc.bot, chatId, messageId, '✅ 任务创建成功，执行中...');
 
-        if (taskIds.length > 0) {
-            await svc.taskService.processAllTasks(true, taskIds);
-        }
+        // createTask 已启动首次执行；等待同一批 Promise，避免重复触发或提前报告完成。
+        await Promise.all(tasks.map(task => svc.taskService.waitForInitialTaskExecution(task)));
 
         await deleteMsg(svc.bot, chatId, messageId);
         await send(svc.bot, chatId, '✅ 任务执行完成');

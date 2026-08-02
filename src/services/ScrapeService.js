@@ -16,7 +16,11 @@ class ScrapeService {
         this.scraped = false;
     }
 
-    async scrapeFromDirectory(dirPath, tmdbId = null) {
+    async scrapeFromDirectory(dirPath, tmdbId = null, collectionFiles = null) {
+        // 电影合集：逐文件独立刮削（每个文件有自己的 tmdbId）
+        if (Array.isArray(collectionFiles) && collectionFiles.length > 1) {
+            return await this._scrapeCollection(dirPath, collectionFiles);
+        }
         if (this.ai.isEnabled()) {
             logTaskEvent('使用AI进行刮削');
             return await this.scrapeWithAI(dirPath, tmdbId);
@@ -192,6 +196,93 @@ class ScrapeService {
 
         } catch (error) {
             logTaskEvent('AI刮削失败: ' + error.message);
+            return null;
+        }
+    }
+
+    /**
+     * 电影合集逐文件刮削：每个 STRM 文件匹配自己的 TMDB 条目，
+     * 生成独立的 {基础名}.nfo + {基础名}-poster.jpg，使 Emby 把每部识别为独立电影。
+     * @param {string} dirPath 合集 STRM 目录
+     * @param {Array<{name:string, tmdbId:string}>} collectionFiles 布局层的逐文件 TMDB 数据
+     */
+    async _scrapeCollection(dirPath, collectionFiles) {
+        try {
+            const strmFiles = await this._getStrmFiles(dirPath);
+            if (strmFiles.length === 0) {
+                logTaskEvent('合集目录中没有可刮削文件');
+                return null;
+            }
+            const parsedPath = this._parseStrmPath(path.join(dirPath, strmFiles[0]));
+            const showDir = parsedPath.showDir;
+
+            const availableEntries = collectionFiles.map((entry, index) => ({ entry, index, used: false }));
+            const normalizeTitle = (value) => String(value || '')
+                .normalize('NFKC')
+                .replace(/\((19|20)\d{2}\)/g, ' ')
+                .replace(/[^\p{L}\p{N}]+/gu, ' ')
+                .replace(/\s+/g, ' ')
+                .trim()
+                .toLowerCase();
+            const pickEntry = (strmFile, sortedIndex) => {
+                const baseName = path.parse(strmFile).name; // 如 "Detective Conan Movie10 ... (2006)"
+                const yearMatch = baseName.match(/\((\d{4})\)/);
+                const fileYear = yearMatch ? yearMatch[1] : '';
+                const normalizedBase = normalizeTitle(baseName);
+                let matched = availableEntries.find(({ entry, used }) =>
+                    !used && entry.organizedFileName
+                    && normalizeTitle(path.parse(entry.organizedFileName).name) === normalizedBase
+                );
+                if (!matched) {
+                    matched = availableEntries.find(({ entry, used }) =>
+                        !used
+                        && (!fileYear || String(entry.year || '') === fileYear)
+                        && normalizeTitle(entry.name) === normalizedBase
+                    );
+                }
+                if (!matched && fileYear) {
+                    const sameYear = availableEntries.filter(({ entry, used }) => !used && String(entry.year || '') === fileYear);
+                    if (sameYear.length === 1) matched = sameYear[0];
+                }
+                if (!matched) {
+                    matched = availableEntries.find(({ used, index }) => !used && index === sortedIndex)
+                        || availableEntries.find(({ used }) => !used);
+                }
+                if (matched) matched.used = true;
+                return matched?.entry || null;
+            };
+
+            let scraped = 0, skipped = 0;
+            const sortedStrmFiles = [...strmFiles].sort((a, b) =>
+                a.localeCompare(b, 'zh-CN', { numeric: true, sensitivity: 'base' })
+            );
+            for (const [index, strmFile] of sortedStrmFiles.entries()) {
+                const baseName = path.parse(strmFile).name;
+                const entry = pickEntry(strmFile, index);
+                if (!entry || !entry.tmdbId) {
+                    skipped++;
+                    continue;
+                }
+                try {
+                    const detail = await this.tmdb.getMovieDetails(entry.tmdbId);
+                    if (!detail?.id) { skipped++; continue; }
+                    const nfoPath = path.join(showDir, `${baseName}.nfo`);
+                    const posterPath = path.join(showDir, `${baseName}-poster.jpg`);
+                    await Promise.all([
+                        this._generateFileIfNotExists(nfoPath, () => this._generateMovieNFO(detail)),
+                        this._generateFileIfNotExists(posterPath, () => this._downloadImage(detail.posterPath))
+                    ]);
+                    scraped++;
+                } catch (error) {
+                    logTaskEvent(`合集文件刮削失败「${baseName}」: ${error.message}`);
+                    skipped++;
+                }
+            }
+            logTaskEvent(`合集刮削完成: 成功 ${scraped}, 跳过 ${skipped}`);
+            this.scraped = scraped > 0;
+            return { type: 'movie', collection: true, scraped, skipped };
+        } catch (error) {
+            logTaskEvent('合集刮削失败: ' + error.message);
             return null;
         }
     }

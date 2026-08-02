@@ -230,9 +230,7 @@ class AutoSeriesService {
             keepCasAfterRestore: Boolean(keepCasAfterRestore)
         });
 
-        for (const task of tasks || []) {
-            await this.taskService.processTask(task);
-        }
+        // createTask 内部已异步触发首次执行，这里不再阻塞等待
 
         return {
             taskCount: tasks?.length || 0,
@@ -287,9 +285,7 @@ class AutoSeriesService {
             keepCasAfterRestore: Boolean(keepCasAfterRestore)
         });
 
-        for (const task of tasks || []) {
-            await this.taskService.processTask(task);
-        }
+        // createTask 内部已异步触发首次执行，这里不再阻塞等待
 
         return {
             taskCount: tasks?.length || 0,

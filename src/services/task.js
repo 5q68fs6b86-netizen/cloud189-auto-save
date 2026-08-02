@@ -21,8 +21,9 @@ const { CasService } = require('./casService');
 const { CasArchiveService } = require('./casArchiveService');
 const { AppDataSource } = require('../database');
 const { TaskProcessedFile } = require('../entities');
-const { parseMediaTitle } = require('../utils/mediaTitleParser');
-const { MediaLibraryLayoutService, joinLocalStrmPath } = require('./mediaLibraryLayout');
+const { parseMediaTitle, detectMovieCollection, resolveTitleMeta } = require('../utils/mediaTitleParser');
+const { renderFileName } = require('../utils/templateRenderer');
+const { MediaLibraryLayoutService, joinLocalStrmPath, sanitizeTitle, extractYear } = require('./mediaLibraryLayout');
 
 function buildTaskTargetRelativePath(task = {}, mediaFile = {}, layout = null) {
     const mediaPath = String(mediaFile.relativePath || mediaFile.name || '')
@@ -51,6 +52,7 @@ class TaskService {
             ? AppDataSource.getRepository(TaskProcessedFile)
             : null);
         this.activeTaskExecutions = new Map();
+        this.initialTaskExecutions = new WeakMap();
         this.activeBatchExecution = null;
         this.activeStrmJobs = new Map(); // key -> Promise 防重复生成/重建
         this.autoSeriesService = null;
@@ -146,6 +148,16 @@ class TaskService {
             return '未知';
         }
         return task.shareFolderName ? `${task.resourceName}/${task.shareFolderName}` : (task.resourceName || `任务${task.id || ''}`);
+    }
+
+    async waitForInitialTaskExecution(task) {
+        const initialExecution = this.initialTaskExecutions?.get(task);
+        if (initialExecution) {
+            return await initialExecution;
+        }
+        const taskExecutionKey = this._getTaskExecutionKey(task);
+        const activeExecution = taskExecutionKey ? this.activeTaskExecutions.get(taskExecutionKey) : null;
+        return activeExecution ? await activeExecution : '';
     }
 
     _isAiAdvancedMode() {
@@ -748,8 +760,18 @@ class TaskService {
         }
         if (taskDto.enableCron) {
             for(const task of tasks) {
-                SchedulerService.saveTaskJob(task, this)   
+                SchedulerService.saveTaskJob(task, this)
             }
+        }
+        // 创建后立即执行一次（异步，不阻塞 API 响应）
+        for (const task of tasks) {
+            const initialExecution = this.processTask(task);
+            this.initialTaskExecutions.set(task, initialExecution);
+            initialExecution.then((result) => {
+                if (result) this.messageUtil.sendMessage(result, { level: 'success' });
+            }).catch((error) => {
+                logTaskEvent(`任务[${task.resourceName || ''}]创建后首次执行失败: ${error.message}`, 'error', 'transfer');
+            });
         }
         await logTaskEvent(`任务创建完成: created=${tasks.length}, resource=${shareInfo.fileName || taskDto.taskName || ''}`, 'info', 'task');
         return tasks;
@@ -1226,6 +1248,31 @@ class TaskService {
         return fileList;
     }
 
+    /**
+     * 递归收集分享目录下的所有文件（含子目录，如 S01/Season 01 等）。
+     * 解决套娃目录问题：分享根目录只有 NCOP/NCED，正片在 S01 子目录里。
+     */
+    async _collectShareFilesRecursive(cloud189, task, shareDirResult, relativeDir = '') {
+        if (!shareDirResult?.fileListAO) return [];
+        const currentRelativeDir = relativeDir ? relativeDir.replace(/^\/+|\/+$/g, '') : '';
+        const fileList = (shareDirResult.fileListAO.fileList || []).map(file => ({
+            ...file,
+            relativeDir: currentRelativeDir,
+            relativePath: currentRelativeDir ? path.join(currentRelativeDir, file.name) : file.name
+        }));
+        const folderList = (shareDirResult.fileListAO.folderList || [])
+            .filter(folder => !CasArchiveService.isReservedDirectory(folder.name));
+        const childFileGroups = await this._mapWithConcurrency(folderList, 4, async (folder) => {
+            const folderName = folder.name || folder.fileName || '';
+            const folderId = folder.id || folder.fileId;
+            const nextRelativeDir = currentRelativeDir ? path.join(currentRelativeDir, folderName) : folderName;
+            const subResult = await cloud189.listShareDir(task.shareId, folderId, task.shareMode, task.accessCode, true);
+            return await this._collectShareFilesRecursive(cloud189, task, subResult, nextRelativeDir);
+        });
+        childFileGroups.forEach(childFiles => fileList.push(...childFiles));
+        return fileList;
+    }
+
     async _mapWithConcurrency(items, limit, worker) {
         if (!items.length) {
             return [];
@@ -1612,8 +1659,8 @@ class TaskService {
         }
 
         if (this.activeTaskExecutions.has(taskExecutionKey)) {
-            logTaskEvent(`任务[${this._getTaskDisplayName(task)}]已在执行中，忽略重复触发`, 'warn', 'transfer');
-            return '';
+            logTaskEvent(`任务[${this._getTaskDisplayName(task)}]已在执行中，复用当前执行结果`, 'warn', 'transfer');
+            return await this.activeTaskExecutions.get(taskExecutionKey);
         }
 
         const executionPromise = this._processTaskInternal(task, options);
@@ -1670,7 +1717,7 @@ class TaskService {
                 logTaskEvent("获取文件列表失败: " + JSON.stringify(shareDir), 'error', 'transfer');
                 throw new Error('获取文件列表失败');
             }
-            let shareFiles = [...shareDir.fileListAO.fileList];
+            let shareFiles = await this._collectShareFilesRecursive(cloud189, task, shareDir);
             const enableOnlySaveMedia = this._shouldOnlySaveMedia(task);
             // mediaSuffixs转为小写
             const mediaSuffixs = ConfigService.getConfigValue('task.mediaSuffix').split(';').map(suffix => suffix.toLowerCase())
@@ -2241,74 +2288,48 @@ class TaskService {
     // 根据AI分析结果生成新文件名
     _generateFileName(file, aiFile, resourceInfo, template) {
         if (!aiFile) return file.name;
-        
-        // 构建文件名替换映射
-        const replaceMap = {
-            '{name}': aiFile.name || resourceInfo.name,
-            '{year}': resourceInfo.year || '',
-            '{s}': aiFile.season?.padStart(2, '0') || '01',
-            '{e}': aiFile.episode?.padStart(2, '0') || '01',
-            '{sn}': parseInt(aiFile.season) || '1',                    // 不补零的季数
-            '{en}': parseInt(aiFile.episode) || '1',                   // 不补零的集数
-            '{ext}': aiFile.extension || path.extname(file.name),
-            '{se}': `S${aiFile.season?.padStart(2, '0') || '01'}E${aiFile.episode?.padStart(2, '0') || '01'}`
-        };
 
-        // 替换模板中的占位符
-        let newName = template;
-        for (const [key, value] of Object.entries(replaceMap)) {
-            newName = newName.replace(new RegExp(key, 'g'), value);
-        }
+        const season = aiFile.season?.padStart(2, '0') || '01';
+        const episode = aiFile.episode?.padStart(2, '0') || '01';
+        const vars = {
+            name: aiFile.name || resourceInfo.name,
+            // 电影合集场景每个文件带独立年份（aiFile.year），优先于合集级年份
+            year: aiFile.year || resourceInfo.year || '',
+            s: season,
+            e: episode,
+            sn: String(parseInt(aiFile.season) || 1),   // 不补零的季数
+            en: String(parseInt(aiFile.episode) || 1),  // 不补零的集数
+            ext: aiFile.extension || path.extname(file.name),
+            se: `S${season}E${episode}`
+        };
+        const newName = renderFileName(template, vars);
         // 清理文件名中的非法字符
         return this._sanitizeFileName(newName);
     }
 
     _buildLocalRenameResourceInfo(task, files) {
+        // 委托给布局服务的确定性构造器，消除重复逻辑（标题层级补全 +合集判定 + 逐文件季集）
         const sortedFiles = [...files].sort((left, right) =>
             String(left.name || '').localeCompare(String(right.name || ''), 'zh-CN', { numeric: true, sensitivity: 'base' })
         );
-        const title = this._sanitizeMediaTitle(task.resourceName || '');
-        const year = this._extractYear(task.resourceName || '');
-        const resourceParsed = parseMediaTitle(task.resourceName || '');
-        let hasSeasonEpisodeHint = resourceParsed.season != null || resourceParsed.episode != null;
-        const parsedEpisodes = sortedFiles.map((file, index) => {
-            const parsed = parseMediaTitle(file.name || '');
-            if (parsed.season != null || parsed.episode != null) {
-                hasSeasonEpisodeHint = true;
-            }
-            const season = parsed.season != null ? String(parsed.season).padStart(2, '0') : '01';
-            const episode = parsed.episode != null
-                ? (parsed.episode >= 100 ? String(parsed.episode) : String(parsed.episode).padStart(2, '0'))
-                : String(index + 1).padStart(2, '0');
-            return {
-                id: String(file.id),
-                name: title,
-                season,
-                episode,
-                extension: path.extname(file.name) || ''
-            };
-        });
-        return {
-            name: title,
-            year,
-            // 单文件也可能是剧集（文件名带 SxxExx）；有季集线索时优先 tv
-            type: (sortedFiles.length > 1 || hasSeasonEpisodeHint) ? 'tv' : 'movie',
-            season: parsedEpisodes[0]?.season || '01',
-            episode: parsedEpisodes
+        const titleMeta = resolveTitleMeta(
+            { resourceName: task.resourceName || '', shareFolderName: task.shareFolderName || '' },
+            sortedFiles
+        );
+        const resourceInfo = {
+            name: sanitizeTitle(titleMeta.title || task.resourceName || '未命名') || '未命名',
+            year: titleMeta.year != null ? titleMeta.year : (extractYear(task.resourceName) || ''),
+            type: 'tv',
+            episode: []
         };
-    }
-
-    _sanitizeMediaTitle(value = '') {
-        return String(value || '')
-            .replace(/\(根\)$/g, '')
-            .replace(/[\[【(（](19|20)\d{2}[\]】)）]/g, '')
-            .replace(/\s+/g, ' ')
-            .trim();
-    }
-
-    _extractYear(value = '') {
-        const matched = String(value || '').match(/(19|20)\d{2}/);
-        return matched ? matched[0] : '';
+        const layoutService = new MediaLibraryLayoutService();
+        const result = layoutService._buildDeterministicResourceInfo(
+            resourceInfo,
+            titleMeta.title || task.resourceName || '',
+            sortedFiles
+        );
+        // 兼容旧返回结构：顶层补一个 season（取首个文件的季号）
+        return { ...result, season: result.episode?.[0]?.season || '01' };
     }
 
     buildOrganizerDirectoryName(aiFile, resourceInfo) {
@@ -2330,8 +2351,8 @@ class TaskService {
         // 处理aiFilename, 文件命名通过配置文件的占位符获取
         // 获取用户配置的文件名模板，如果没有配置则使用默认模板
         const template = resourceInfo.type === 'movie' 
-        ? ConfigService.getConfigValue('openai.rename.movieTemplate') || '{name} ({year}){ext}'  // 电影模板
-        : ConfigService.getConfigValue('openai.rename.template') || '{name} - {se}{ext}';  // 剧集模板
+        ? ConfigService.getConfigValue('openai.rename.movieTemplate') || '{{name}}{% if year %} ({{year}}){% endif %}{{ext}}'  // 电影模板
+        : ConfigService.getConfigValue('openai.rename.template') || '{{name}} - {{se}}{{ext}}';  // 剧集模板
         for (const file of files) {
             try {
                 const aiFile = newNames.find(f => f.id === file.id);
@@ -3272,8 +3293,8 @@ class TaskService {
     // ai命名处理
     async handleAiRename(files, resourceInfo) {
         const template = resourceInfo.type === 'movie' 
-        ? ConfigService.getConfigValue('openai.rename.movieTemplate') || '{name} ({year}){ext}'  // 电影模板
-        : ConfigService.getConfigValue('openai.rename.template') || '{name} - {se}{ext}';  // 剧集模板
+        ? ConfigService.getConfigValue('openai.rename.movieTemplate') || '{{name}}{% if year %} ({{year}}){% endif %}{{ext}}'  // 电影模板
+        : ConfigService.getConfigValue('openai.rename.template') || '{{name}} - {{se}}{{ext}}';  // 剧集模板
         const aiNames = Array.isArray(resourceInfo?.episode) ? resourceInfo.episode : [];
         const newFiles = [];
         for (const file of files) {
@@ -3391,7 +3412,8 @@ class TaskService {
         if (!shareDir?.fileListAO?.fileList) {
             throw new Error('获取分享目录失败');
         }
-        return await this._getLazyStrmFiles(task, [...shareDir.fileListAO.fileList]);
+        const shareFiles = await this._collectShareFilesRecursive(cloud189, task, shareDir);
+        return await this._getLazyStrmFiles(task, shareFiles);
     }
 
     /**
@@ -3420,9 +3442,9 @@ class TaskService {
         const existingNames = new Set(folderFiles.map(f => f.name));
         const existingMediaIndex = this._buildExistingMediaIndex(folderFiles, task);
 
-        // 2. 获取分享源文件，用于比对
+        // 2. 获取分享源文件，用于比对（递归收集含子目录）
         const shareDir = await cloud189.listShareDir(task.shareId, task.shareFolderId, task.shareMode, task.accessCode, task.isFolder);
-        const shareFiles = (shareDir?.fileListAO?.fileList || []).filter(f => !f.isFolder);
+        const shareFiles = (await this._collectShareFilesRecursive(cloud189, task, shareDir)).filter(f => !f.isFolder);
 
         // 3. 同步子记录 (Detail) - 该方法已包含对 .cas/restoreName 的多重匹配
         const repairedCount = await this._syncTaskDetailRecordsWithActualFiles(task);
