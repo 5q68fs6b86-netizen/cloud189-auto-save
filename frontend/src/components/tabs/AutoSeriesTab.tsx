@@ -468,8 +468,8 @@ const AutoSeriesTab: React.FC = () => {
                   onChange={e => setForm({ ...form, mode: e.target.value as AutoSeriesMode })}
                   className="w-full px-5 py-3 bg-slate-50 border border-slate-300 rounded-2xl text-sm outline-none focus:ring-2 focus:ring-[#0b57d0]/20"
                 >
-                  <option value="lazy">懒转存 (生成STRM)</option>
-                  <option value="normal">自动转存 (下载文件)</option>
+                  <option value="lazy">懒转存 (生成STRM，播放时转存)</option>
+                  <option value="normal">自动转存 (保存到网盘)</option>
                 </select>
               </div>
             </div>

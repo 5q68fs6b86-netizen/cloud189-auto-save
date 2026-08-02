@@ -131,7 +131,10 @@ const initialSettings: MediaSettings = {
     hasApiKey: false,
     model: '',
     flowControlEnabled: false,
-    rename: { template: '{name} - {se}{ext}', movieTemplate: '{name} ({year}){ext}' }
+    rename: {
+      template: '{{name}} - {{se}}{{ext}}',
+      movieTemplate: '{{name}}{% if year %} ({{year}}){% endif %}{{ext}}'
+    }
   },
   alist: { enable: false, baseUrl: '', apiKey: '', hasApiKey: false },
   organizer: {
@@ -490,7 +493,7 @@ const MediaTab: React.FC = () => {
           <div className="bg-blue-50 p-4 rounded-2xl border border-blue-100 flex gap-3">
             <AlertCircle size={20} className="text-blue-600 shrink-0 mt-0.5" />
             <p className="text-xs text-blue-800 leading-relaxed">
-              启用后AI重命名将优先执行。剧集模板示例：<code className="bg-blue-100 px-1.5 py-0.5 rounded text-blue-900">{'{name} - S{s}E{e}{ext}'}</code> → 北上 - S01E01.mkv
+              支持 Nunjucks 条件语法并兼容旧占位符。剧集示例：<code className="bg-blue-100 px-1.5 py-0.5 rounded text-blue-900">{'{{name}} - {{se}}{{ext}}'}</code>；电影可用 <code className="bg-blue-100 px-1.5 py-0.5 rounded text-blue-900">{'{% if year %}'}</code> 在年份为空时省略括号。
             </p>
           </div>
         </div>

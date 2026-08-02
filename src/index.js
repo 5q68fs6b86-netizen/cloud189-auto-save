@@ -41,6 +41,7 @@ const { CasService } = require('./services/casService');
 const { CasImportService } = require('./services/casImportService');
 const { DoubanService } = require('./services/douban');
 const multer = require('multer');
+const { validateLazyFileCleanupSettings } = require('./utils/settingsValidation');
 
 const appPort = Number(process.env.PORT || 3000);
 let embyStandaloneProxyServer = null;
@@ -1584,6 +1585,13 @@ AppDataSource.initialize().then(async () => {
             if (task.account) {
                 task.account.accountType = task.account.accountType || 'personal';
             }
+            // 电影合集标记：供前端展示「合集详情」入口
+            let isCollection = false;
+            try {
+                const layout = task.libraryLayout ? JSON.parse(task.libraryLayout) : null;
+                isCollection = layout?.mediaType === 'movie' && Array.isArray(layout.files) && layout.files.length > 1;
+            } catch (_) {}
+            task.isCollection = isCollection;
         });
         res.json({
             success: true,
@@ -1755,6 +1763,31 @@ AppDataSource.initialize().then(async () => {
         try {
             const result = await taskService.bindManualTmdb(parseInt(req.params.id), req.body || {});
             res.json({ success: true, data: result });
+        } catch (error) {
+            res.json({ success: false, error: error.message });
+        }
+    });
+
+    // 电影合集逐文件 TMDB 数据（供前端展示合集详情）
+    app.get('/api/tasks/:id/collection-files', async (req, res) => {
+        try {
+            const task = await taskRepo.findOne({ where: { id: parseInt(req.params.id) } });
+            if (!task) throw new Error('任务不存在');
+            let layout = null;
+            try { layout = task.libraryLayout ? JSON.parse(task.libraryLayout) : null; } catch (_) {}
+            const isCollection = layout?.mediaType === 'movie' && Array.isArray(layout.files) && layout.files.length > 1;
+            if (!isCollection) {
+                return res.json({ success: true, data: { isCollection: false, files: [] } });
+            }
+            const files = layout.files.map((f) => ({
+                name: f.name || '',
+                title: f.tmdbTitle || f.name || '',
+                year: f.year || '',
+                tmdbId: f.tmdbId || '',
+                posterPath: f.posterPath || '',
+                matched: !!f.tmdbId
+            }));
+            res.json({ success: true, data: { isCollection: true, files } });
         } catch (error) {
             res.json({ success: false, error: error.message });
         }
@@ -2484,25 +2517,34 @@ AppDataSource.initialize().then(async () => {
     })
 
     app.post('/api/settings', async (req, res) => {
-        const settings = preserveSensitiveOnEmptyInput(
-            await prepareSettingsForSave(normalizeTelegramSettings(req.body))
-        );
-        SchedulerService.handleScheduleTasks(settings,taskService);
-        ConfigService.setConfig(settings)
-        await botManager.handleBotStatus(
-            settings.telegram?.bot?.botToken,
-            settings.telegram?.bot?.chatId,
-            settings.telegram?.bot?.enable,
-            {
-                allowedChatIds: settings.telegram?.bot?.allowedChatIds || [],
-                adminChatIds: settings.telegram?.bot?.adminChatIds || [],
+        try {
+            const settings = preserveSensitiveOnEmptyInput(
+                await prepareSettingsForSave(normalizeTelegramSettings(req.body))
+            );
+            const validationError = validateLazyFileCleanupSettings(settings);
+            if (validationError) {
+                return res.status(400).json({ success: false, error: validationError });
             }
-        );
-        // 修改配置, 重新实例化消息推送
-        messageUtil.updateConfig()
-        Cloud189Service.setProxy()
-        await embyPrewarmService.reload();
-        res.json({success: true, data: null})
+
+            SchedulerService.handleScheduleTasks(settings,taskService);
+            ConfigService.setConfig(settings)
+            await botManager.handleBotStatus(
+                settings.telegram?.bot?.botToken,
+                settings.telegram?.bot?.chatId,
+                settings.telegram?.bot?.enable,
+                {
+                    allowedChatIds: settings.telegram?.bot?.allowedChatIds || [],
+                    adminChatIds: settings.telegram?.bot?.adminChatIds || [],
+                }
+            );
+            // 修改配置, 重新实例化消息推送
+            messageUtil.updateConfig()
+            Cloud189Service.setProxy()
+            await embyPrewarmService.reload();
+            res.json({success: true, data: null})
+        } catch (error) {
+            res.status(400).json({ success: false, error: error.message || '保存设置失败' });
+        }
     })
 
     app.post('/api/settings/telegram/test', async (req, res) => {

@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef, useLayoutEffect } from 'react';
 import { createPortal } from 'react-dom';
-import { Plus, ChevronRight, Filter, Search, RefreshCw, Files, PlayCircle, MoreVertical, CheckCircle2, AlertCircle, Clock, Trash2, ClipboardList, Edit3 } from 'lucide-react';
+import { Plus, ChevronRight, Filter, Search, RefreshCw, Files, PlayCircle, MoreVertical, CheckCircle2, AlertCircle, Clock, Trash2, ClipboardList, Edit3, Film } from 'lucide-react';
 import { motion } from 'motion/react';
 import { useToast } from '../ui/Toast';
 import { useDialog } from '../ui/Dialog';
@@ -44,10 +44,20 @@ interface Task {
   enableOrganizer: boolean;
   keepCasAfterRestore?: boolean;
   enableCron: boolean;
+  isCollection?: boolean;
 }
 
 interface TaskTabProps {
   onCreateTask: (initialData?: any) => void;
+}
+
+interface CollectionFile {
+  name: string;
+  title: string;
+  year: string | number;
+  tmdbId: string;
+  posterPath: string;
+  matched: boolean;
 }
 
 type TaskStatus = Task['status'];
@@ -103,6 +113,7 @@ const TaskTab: React.FC<TaskTabProps> = ({ onCreateTask }) => {
   const menuButtonRef = useRef<HTMLButtonElement>(null);
 
   const [filterGroups, setFilterGroups] = useState<string[]>([]);
+  const [collectionModal, setCollectionModal] = useState<{ title: string; loading: boolean; files: CollectionFile[] } | null>(null);
 
   const fetchTasks = useCallback(async (signal?: AbortSignal) => {
     setLoading(true);
@@ -435,6 +446,24 @@ const TaskTab: React.FC<TaskTabProps> = ({ onCreateTask }) => {
       }
     } catch (error) {
       toast.error('TMDB 绑定失败');
+    }
+  };
+
+  const handleViewCollection = async (task: Task) => {
+    const title = task.tmdbTitle || task.resourceName || '合集详情';
+    setCollectionModal({ title, loading: true, files: [] });
+    try {
+      const response = await fetch(`/api/tasks/${task.id}/collection-files`);
+      const data = await response.json();
+      if (data.success && data.data?.isCollection) {
+        setCollectionModal({ title, loading: false, files: data.data.files || [] });
+      } else {
+        toast.error(data.error || '该任务不是电影合集');
+        setCollectionModal(null);
+      }
+    } catch (error) {
+      toast.error('获取合集详情失败');
+      setCollectionModal(null);
     }
   };
 
@@ -987,6 +1016,17 @@ const TaskTab: React.FC<TaskTabProps> = ({ onCreateTask }) => {
                           >
                             <RefreshCw size={14} /> 清理缓存
                           </button>
+                          {task.isCollection && (
+                            <button
+                              onClick={() => {
+                                setOpenTaskMenuId(null);
+                                handleViewCollection(task);
+                              }}
+                              className="w-full text-left px-3 py-1.5 hover:bg-slate-50 text-sm text-slate-700 transition-colors flex items-center gap-2"
+                            >
+                              <Film size={14} /> 查看合集详情
+                            </button>
+                          )}
                           <button
                             onClick={() => {
                               setOpenTaskMenuId(null);
@@ -1050,6 +1090,74 @@ const TaskTab: React.FC<TaskTabProps> = ({ onCreateTask }) => {
             </button>
           </div>
         </div>
+      )}
+
+      {collectionModal && createPortal(
+        <>
+          <div
+            className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm"
+            style={{ zIndex: 400 }}
+            onClick={() => setCollectionModal(null)}
+          />
+          <div
+            className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[calc(100%-2rem)] max-w-3xl max-h-[85vh] rounded-[28px] border border-[var(--modal-border)] bg-[var(--modal-bg)] text-[var(--text-primary)] shadow-2xl overflow-hidden flex flex-col"
+            style={{ zIndex: 401 }}
+          >
+            <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100">
+              <div className="flex items-center gap-2">
+                <Film size={18} />
+                <h3 className="text-base font-semibold ui-title truncate max-w-[70%]">{collectionModal.title}</h3>
+                {!collectionModal.loading && (
+                  <span className="text-xs text-slate-400">{collectionModal.files.length} 部</span>
+                )}
+              </div>
+              <button
+                onClick={() => setCollectionModal(null)}
+                className="text-slate-400 hover:text-slate-600 transition-colors text-xl leading-none"
+              >
+                ×
+              </button>
+            </div>
+            <div className="overflow-y-auto p-6">
+              {collectionModal.loading ? (
+                <div className="text-center py-16 text-slate-400 text-sm">加载中…</div>
+              ) : (
+                <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 gap-4">
+                  {collectionModal.files.map((file, idx) => (
+                    <div key={idx} className="flex flex-col">
+                      <div className="aspect-[2/3] rounded-xl overflow-hidden bg-slate-100 border border-slate-200">
+                        {file.matched && file.posterPath ? (
+                          <img
+                            src={file.posterPath.replace('/w500', '/w185')}
+                            alt={file.title}
+                            className="w-full h-full object-cover"
+                            loading="lazy"
+                          />
+                        ) : (
+                          <div className="w-full h-full flex items-center justify-center text-slate-300">
+                            <Film size={28} />
+                          </div>
+                        )}
+                      </div>
+                      <div className="mt-1.5">
+                        <p className="text-xs font-medium ui-title truncate" title={file.title}>
+                          {file.title || file.name}
+                        </p>
+                        <div className="flex items-center gap-1 mt-0.5">
+                          {file.year && <span className="text-[10px] text-slate-400">{file.year}</span>}
+                          <span className={`text-[10px] px-1 rounded ${file.matched ? 'bg-emerald-50 text-emerald-600' : 'bg-slate-100 text-slate-400'}`}>
+                            {file.matched ? '已匹配' : '未匹配'}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </>,
+        document.body
       )}
     </div>
   );

@@ -100,6 +100,14 @@ class OrganizerService {
                     videoType: tmdbType,
                     tmdbContent: JSON.stringify(tmdbDetails)
                 };
+                // 同步季集数到任务（自动路径之前漏了，导致前端显示不出集数，需手动重绑 TMDB 才行）
+                if (tmdbType === 'tv') {
+                    const seasonNumber = Number(task.manualSeason || task.tmdbSeasonNumber || 1) || 1;
+                    const seasonEpisodes = this._getSeasonEpisodeCount(tmdbDetails, seasonNumber);
+                    canonicalMetadata.tmdbSeasonNumber = seasonNumber;
+                    canonicalMetadata.tmdbSeasonEpisodes = seasonEpisodes || Number(tmdbDetails.totalEpisodes || 0);
+                    canonicalMetadata.totalEpisodes = seasonEpisodes || Number(tmdbDetails.totalEpisodes || task.totalEpisodes || 0);
+                }
             }
         }
         Object.assign(task, canonicalMetadata);
@@ -757,6 +765,14 @@ class OrganizerService {
     _extractYear(value = '') {
         const matched = String(value || '').match(/(19|20)\d{2}/);
         return matched ? matched[0] : '';
+    }
+
+    _getSeasonEpisodeCount(detail, seasonNumber) {
+        if (!seasonNumber || !Array.isArray(detail?.seasons)) {
+            return 0;
+        }
+        const seasonInfo = detail.seasons.find(season => Number(season.season_number) === Number(seasonNumber));
+        return Number(seasonInfo?.episode_count || 0);
     }
 
     _sanitizeTitle(title = '') {

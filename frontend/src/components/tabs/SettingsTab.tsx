@@ -14,6 +14,23 @@ const parseIntOr = (raw: string, fallback: number) => {
   return Number.isFinite(n) ? n : fallback;
 };
 
+const getDailyTimeFromCron = (cronExpression: string) => {
+  const match = cronExpression.trim().match(/^(\d{1,2})\s+(\d{1,2})\s+\*\s+\*\s+\*$/);
+  if (!match) return '';
+
+  const minute = Number(match[1]);
+  const hour = Number(match[2]);
+  if (minute > 59 || hour > 23) return '';
+
+  return `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
+};
+
+const getDailyCronFromTime = (time: string) => {
+  const match = time.match(/^([01]\d|2[0-3]):([0-5]\d)$/);
+  if (!match) return '';
+  return `${Number(match[2])} ${Number(match[1])} * * *`;
+};
+
 interface CustomPushConfig {
   name: string;
   description: string;
@@ -281,6 +298,7 @@ const SettingsTab: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [keepAliveRunning, setKeepAliveRunning] = useState(false);
+  const lazyFileDailyCleanupTime = getDailyTimeFromCron(settings.task.lazyFileCleanupCron);
 
   // Folder Selector State
   const [isFolderSelectorOpen, setIsFolderSelectorOpen] = useState(false);
@@ -444,6 +462,16 @@ const SettingsTab: React.FC = () => {
   };
 
   const handleSave = async () => {
+    if (!Number.isFinite(settings.task.lazyFileRetentionHours) || settings.task.lazyFileRetentionHours < 1) {
+      toast.error('懒转存文件保留时长不能小于 1 小时');
+      return;
+    }
+
+    if (!settings.task.lazyFileCleanupCron.trim()) {
+      toast.error('懒转存清理 Cron 不能为空');
+      return;
+    }
+
     setSaving(true);
     try {
       const { regexPresets, ...mainSettings } = settings;
@@ -728,13 +756,32 @@ const SettingsTab: React.FC = () => {
               />
             </div>
             <div className="space-y-2">
-              <label className="text-sm font-medium ui-title">懒转存清理定时 (Cron)</label>
-              <input 
-                type="text" 
-                value={settings.task.lazyFileCleanupCron}
-                onChange={(e) => updateSettings('task.lazyFileCleanupCron', e.target.value)}
+              <label className="text-sm font-medium ui-title">每天清理时间（快捷设置）</label>
+              <input
+                type="time"
+                value={lazyFileDailyCleanupTime}
+                onChange={(e) => {
+                  const cronExpression = getDailyCronFromTime(e.target.value);
+                  if (cronExpression) updateSettings('task.lazyFileCleanupCron', cronExpression);
+                }}
                 className="w-full px-5 py-3 bg-slate-50 border border-slate-300 rounded-2xl text-sm outline-none focus:ring-2 focus:ring-[#0b57d0]/20"
               />
+              <p className="text-xs text-slate-400">
+                {lazyFileDailyCleanupTime
+                  ? `当前每天 ${lazyFileDailyCleanupTime} 执行，选择新时间会同步更新 Cron。`
+                  : '当前使用自定义 Cron；选择时间后会改为每天执行一次。'}
+              </p>
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm font-medium ui-title">懒转存清理定时（Cron，高级）</label>
+              <input
+                type="text"
+                value={settings.task.lazyFileCleanupCron}
+                onChange={(e) => updateSettings('task.lazyFileCleanupCron', e.target.value)}
+                placeholder="例如：0 3 * * *"
+                className="w-full px-5 py-3 bg-slate-50 border border-slate-300 rounded-2xl text-sm outline-none focus:ring-2 focus:ring-[#0b57d0]/20"
+              />
+              <p className="text-xs text-slate-400">可直接填写复杂 Cron；例如每 6 小时执行一次：0 */6 * * *</p>
             </div>
             <div className="space-y-2">
               <label className="text-sm font-medium ui-title">Session 保活定时 (Cron)</label>
@@ -747,12 +794,15 @@ const SettingsTab: React.FC = () => {
             </div>
             <div className="space-y-2">
               <label className="text-sm font-medium ui-title">懒转存保留时间 (小时)</label>
-              <input 
-                type="number" 
+              <input
+                type="number"
+                min={1}
+                step={1}
                 value={settings.task.lazyFileRetentionHours}
                 onChange={(e) => updateSettings('task.lazyFileRetentionHours', parseIntOr(e.target.value, 24))}
                 className="w-full px-5 py-3 bg-slate-50 border border-slate-300 rounded-2xl text-sm outline-none focus:ring-2 focus:ring-[#0b57d0]/20"
               />
+              <p className="text-xs text-slate-400">云盘文件超过该时长后，会在下一次清理任务运行时删除。</p>
             </div>
             <div className="space-y-2 md:col-span-2">
               <label className="text-sm font-medium ui-title">媒体文件后缀</label>
@@ -804,6 +854,7 @@ const SettingsTab: React.FC = () => {
               </div>
               <div>
                 <span className="text-sm font-medium ui-title">自动清理懒转存文件</span>
+                <p className="text-[10px] text-slate-400">仅清理云盘缓存文件，不删除本地 STRM</p>
               </div>
             </label>
             <label className="flex items-center gap-3 cursor-pointer group p-4 rounded-2xl border border-slate-100 bg-slate-50/50 hover:bg-slate-50 transition-colors">

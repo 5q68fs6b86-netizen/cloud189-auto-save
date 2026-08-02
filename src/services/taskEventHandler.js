@@ -114,9 +114,24 @@ class TaskEventHandler {
                 const strmPath = strmService.getStrmPath(task);
                 if (strmPath) {
                     const scrapeService = new ScrapeService();
-                    logTaskEvent(`开始刮削tmdbId: ${task.tmdbId}的媒体信息, 路径: ${strmPath}`);
-                    const mediaDetails = await scrapeService.scrapeFromDirectory(strmPath, task.tmdbId);
-                    if (mediaDetails) {
+                    // 电影合集：从锁定布局读取逐文件 TMDB 数据，逐文件独立刮削
+                    let collectionFiles = null;
+                    try {
+                        const layout = task.libraryLayout ? JSON.parse(task.libraryLayout) : null;
+                        if (layout?.mediaType === 'movie' && Array.isArray(layout.files) && layout.files.length > 1) {
+                            collectionFiles = layout.files;
+                        }
+                    } catch (_) {}
+                    logTaskEvent(`开始刮削${collectionFiles ? '合集(' + collectionFiles.length + '部)' : ' tmdbId: ' + task.tmdbId}的媒体信息, 路径: ${strmPath}`);
+                    const mediaDetails = await scrapeService.scrapeFromDirectory(strmPath, task.tmdbId, collectionFiles);
+                    if (mediaDetails?.collection) {
+                        // 合集刮削：逐文件独立，不写任务级 tmdbId，推送汇总消息
+                        this.messageUtil.sendScrapeMessage({
+                            title: `✅ 合集刮削成功：${mediaDetails.scraped} 部`,
+                            description: `跳过 ${mediaDetails.skipped} 部（未匹配 TMDB）`,
+                            type: 'movie'
+                        }, { level: 'scrape' });
+                    } else if (mediaDetails) {
                         if (task.tmdbId != mediaDetails.tmdbId) {
                             await taskRepo.update(task.id, {
                                 tmdbId: mediaDetails.tmdbId,

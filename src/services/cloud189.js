@@ -783,11 +783,13 @@ class Cloud189Service {
                     familyId
                 },
             });
-            const url = response?.fileDownloadUrl;
+            let url = response?.fileDownloadUrl;
             if (!url) {
                 throw new Error(response?.res_msg || '获取家庭云直链失败');
             }
-            const res = await got(String(url).replace('http://', 'https://'), {
+            // 天翼 API 返回的 URL 里 & 被 HTML 转义成 &amp;，必须还原否则参数全乱 → 403
+            url = String(url).replace(/&amp;/g, '&').replace('http://', 'https://');
+            const res = await got(url, {
                 followRedirect: false,
                 headers: {
                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36 Edg/119.0.0.0'
