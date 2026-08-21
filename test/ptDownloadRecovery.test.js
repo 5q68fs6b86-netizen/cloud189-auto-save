@@ -5,6 +5,7 @@ const fsp = fs.promises;
 const os = require('node:os');
 const path = require('node:path');
 
+const ConfigService = require('../src/services/ConfigService');
 const { PtService } = require('../src/services/ptService');
 
 const makeRepositories = (release, saves) => ({
@@ -438,7 +439,13 @@ test('重新投递前会丢弃下载器中不存在的旧 hash', async () => {
         totalSize: 0
     });
 
-    await service._dispatchToDownloader({ id: 7 }, release);
+    const originalDownloadRoot = ConfigService.getConfigValue('pt.downloadRoot', '');
+    ConfigService._config.pt.downloadRoot = os.tmpdir();
+    try {
+        await service._dispatchToDownloader({ id: 7 }, release);
+    } finally {
+        ConfigService._config.pt.downloadRoot = originalDownloadRoot;
+    }
 
     assert.equal(release.infoHash, 'missing-hash');
     assert.equal(release.qbTorrentHash, 'new-hash');
