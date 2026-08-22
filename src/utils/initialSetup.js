@@ -35,10 +35,23 @@ const getPresentedSetupToken = (req) => String(
     || ''
 ).trim();
 
+const getInitialSetupClientAddress = (req) => {
+    const socketAddress = req?.socket?.remoteAddress || '';
+    if (!isLoopbackAddress(socketAddress)) {
+        return socketAddress;
+    }
+
+    // 仅信任来自本机反向代理的客户端地址，防止远程请求伪造转发头绕过校验。
+    const forwardedAddress = String(req?.headers?.['x-forwarded-for'] || '')
+        .split(',')[0]
+        .trim();
+    return forwardedAddress || req?.headers?.['x-real-ip'] || socketAddress;
+};
+
 const authorizeInitialSetup = (req) => {
     const configuredToken = getInitialSetupToken();
-    const remoteAddress = req?.socket?.remoteAddress || '';
-    if (isLoopbackAddress(remoteAddress)) {
+    const clientAddress = getInitialSetupClientAddress(req);
+    if (isLoopbackAddress(clientAddress)) {
         return { allowed: true, mode: 'loopback' };
     }
     if (!configuredToken) {
@@ -60,6 +73,7 @@ const authorizeInitialSetup = (req) => {
 
 module.exports = {
     authorizeInitialSetup,
+    getInitialSetupClientAddress,
     getInitialSetupToken,
     isLoopbackAddress,
     normalizeRemoteAddress
